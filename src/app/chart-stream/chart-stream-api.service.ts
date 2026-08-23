@@ -7,6 +7,7 @@ import type {
   ApiErrorBody,
   ChartSessionSnapshot,
   InstrumentRequest,
+  OptionChain,
   ResolvedInstrument,
   StartStreamRequest,
 } from './chart-stream.models';
@@ -33,6 +34,30 @@ export class ChartStreamError extends Error {
 export class ChartStreamApiService {
   private readonly http = inject(HttpClient);
   private readonly base = environment.apiBase; // e.g. 'http://localhost:3000'
+
+  /** Every underlying this backend synced — the first picker's options. */
+  underlyings(): Observable<{ underlyings: string[] }> {
+    return this.http
+      .get<{ underlyings: string[] }>(`${this.base}/streamer/instruments/underlyings`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The call and put ladders for one underlying/expiry.
+   *
+   * Both legs come back in one request on purpose: the strike pickers sit side
+   * by side, and two requests could straddle two instrument-master syncs.
+   */
+  chain(underlying: string, expiry: string, pricedOn?: string): Observable<OptionChain> {
+    return this.http
+      .get<OptionChain>(`${this.base}/streamer/instruments/chain`, {
+        // `date` is what turns on pricing. Omitted, the ladder comes back
+        // instantly; supplied, the backend prices the near-the-money strikes,
+        // which costs it one upstream request per contract.
+        params: pricedOn ? { underlying, expiry, date: pricedOn } : { underlying, expiry },
+      })
+      .pipe(catchError(this.unwrap));
+  }
 
   expiries(underlying: string): Observable<{ underlying: string; expiries: string[] }> {
     return this.http

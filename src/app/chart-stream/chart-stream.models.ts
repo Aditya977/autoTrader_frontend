@@ -33,6 +33,52 @@ export interface ResolvedInstrument {
   tickSize: number;
 }
 
+/** One tradable option contract, as `GET /streamer/instruments/chain` lists it. */
+export interface OptionContract {
+  instrumentKey: string;
+  tradingsymbol: string;
+  /**
+   * Strike price — what the contract is struck at, not its live premium. The
+   * instrument master carries no premium, and the backend does not invent one.
+   */
+  strike: number;
+  lotSize: number;
+  tickSize: number;
+}
+
+/**
+ * An {@link OptionContract} with market data attached.
+ *
+ * Every field is nullable and `null` never means zero — an untraded strike has
+ * no price, and showing 0 would put a real-looking number on a contract nobody
+ * has paid for. Render an em dash instead.
+ */
+export interface PricedOptionContract extends OptionContract {
+  /** Last traded premium: live when quoting now, the close on a past date. */
+  ltp: number | null;
+  /** Closing premium — the previous session's when live. */
+  close: number | null;
+  openInterest: number | null;
+  volume: number | null;
+  /** Implied volatility as the broker reports it. */
+  iv: number | null;
+}
+
+/** Both legs of one underlying/expiry, each ascending by strike. */
+export interface OptionChain {
+  underlying: string;
+  expiry: string;
+  calls: PricedOptionContract[];
+  puts: PricedOptionContract[];
+  /**
+   * `null` when the numbers are live, or the trading date they are the close
+   * of — so a historical close is never shown as a current price.
+   */
+  pricedOn: string | null;
+  /** The underlying's own price, read alongside the strikes. */
+  underlyingPrice: number | null;
+}
+
 export interface StartStreamRequest {
   mode: ChartSessionMode;
   instrument: InstrumentRequest;
@@ -41,6 +87,12 @@ export interface StartStreamRequest {
   date?: string;
   /** TEST only. 0 = as fast as possible, 1 = real recorded pace. */
   replaySpeed?: number;
+  /**
+   * Prior *trading* days of already-closed bars to send before the stream
+   * starts. Counted back from `date` (TEST) or today (LIVE), so asking for 1
+   * on a Monday yields the previous Friday.
+   */
+  historyDays?: number;
 }
 
 export interface ChartSessionSnapshot {
