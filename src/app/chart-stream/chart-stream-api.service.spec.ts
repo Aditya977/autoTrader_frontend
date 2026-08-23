@@ -78,4 +78,42 @@ describe('ChartStreamApiService', () => {
     expect(caught!.code).toBe('NETWORK_ERROR');
     expect(caught!.issues).toEqual([]);
   });
+
+  it('lists underlyings from /streamer/instruments/underlyings', () => {
+    let received: string[] | undefined;
+    api.underlyings().subscribe((r) => (received = r.underlyings));
+
+    const req = http.expectOne(`${environment.apiBase}/streamer/instruments/underlyings`);
+    expect(req.request.method).toBe('GET');
+    req.flush({ underlyings: ['BANKNIFTY', 'NIFTY'] });
+
+    expect(received).toEqual(['BANKNIFTY', 'NIFTY']);
+  });
+
+  it('sends underlying and expiry as query params when fetching a chain', () => {
+    api.chain('NIFTY', '2026-08-25').subscribe();
+
+    const req = http.expectOne(
+      (r) => r.url === `${environment.apiBase}/streamer/instruments/chain`,
+    );
+    expect(req.request.method).toBe('GET');
+    expect(req.request.params.get('underlying')).toBe('NIFTY');
+    expect(req.request.params.get('expiry')).toBe('2026-08-25');
+    req.flush({ underlying: 'NIFTY', expiry: '2026-08-25', calls: [], puts: [] });
+  });
+
+  it('unwraps a chain error into ChartStreamError like every other endpoint', () => {
+    let error: ChartStreamError | undefined;
+    api.chain('NIFTY', '2030-01-01').subscribe({ error: (e: ChartStreamError) => (error = e) });
+
+    const body: ApiErrorBody = {
+      error: { code: 'InstrumentMasterError', message: 'no contracts found' },
+    };
+    http
+      .expectOne((r) => r.url === `${environment.apiBase}/streamer/instruments/chain`)
+      .flush(body, { status: 422, statusText: 'Unprocessable Entity' });
+
+    expect(error?.code).toBe('InstrumentMasterError');
+    expect(error?.status).toBe(422);
+  });
 });
