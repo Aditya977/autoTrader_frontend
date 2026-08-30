@@ -1,1 +1,234 @@
-/* You can add global styles to this file, and also import other style files */
+/* =========================================================================
+   Design tokens and global base.
+   =========================================================================
+
+   One dark theme, committed to rather than derived from the OS: this is a
+   trading surface that lives beside a broker terminal, charts render on a dark
+   canvas, and a light variant would mean maintaining a second chart palette
+   for a mode nobody switches into mid-session.
+
+   Everything below is a token or a base element rule. Component-specific
+   styling stays in the component that owns it. */
+
+:root {
+  /* Surfaces, darkest to lightest — depth comes from these, not from shadows. */
+  --bg: #0b0f14;
+  --surface: #111820;
+  --surface-2: #161f2a;
+  --surface-3: #1d2835;
+
+  --border: #212e3c;
+  --border-strong: #2c3d4f;
+
+  /* Text */
+  --text: #e6edf3;
+  --text-muted: #8b9bad;
+  --text-faint: #5f7183;
+
+  /* Accents */
+  --accent: #3ba7ff;
+  --accent-dim: #1d5f95;
+  --up: #26a17b;
+  --down: #ef5350;
+  --warn: #e0a458;
+  --danger: #f0666b;
+
+  /* Chart palette — shared with the Lightweight Charts options object so the
+     canvas and the DOM around it cannot drift apart. */
+  --chart-grid: #18222d;
+  --chart-crosshair: #56718a;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+
+  --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Tabular figures matter here: a price that shifts sideways as it ticks is
+     harder to read than one that changes in place. */
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas,
+    monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+code,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ---- Form controls -------------------------------------------------------
+   Native controls styled once, globally: every one of them in this app lives
+   in the same toolbar and should look identical, and a per-component copy of
+   these rules is how two of them end up subtly different. */
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+select,
+input[type='date'],
+input[type='text'] {
+  appearance: none;
+  width: 100%;
+  padding: 0.5rem 2rem 0.5rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 0.875rem;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+input[type='date'],
+input[type='text'] {
+  padding-right: 0.65rem;
+}
+
+select {
+  /* The caret is drawn here rather than left to the platform, which otherwise
+     paints a light-mode triangle on this dark background. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+    linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
+  background-position:
+    calc(100% - 1.1rem) 55%,
+    calc(100% - 0.72rem) 55%;
+  background-size:
+    6px 6px,
+    6px 6px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+select:hover:not(:disabled),
+input:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+}
+
+select:focus-visible,
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+select:disabled,
+input:disabled {
+  background: var(--surface);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    opacity 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--border-strong);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #06121d;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #5cb8ff;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: var(--border-strong);
+  color: var(--text-muted);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 5px;
+  border: 2px solid var(--bg);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}

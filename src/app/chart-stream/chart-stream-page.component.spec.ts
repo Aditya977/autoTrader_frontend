@@ -2,60 +2,42 @@ import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { provideRouter } from '@angular/router';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { EMPTY } from 'rxjs';
 import { ChartStreamPageComponent } from './chart-stream-page.component';
+import { ChartStreamSocketService } from './chart-stream-socket.service';
 import { environment } from '../../environments/environment';
-import type { OptionChain } from './chart-stream.models';
+import type { OptionChain, PricedOptionContract, StartStreamRequest } from './chart-stream.models';
+
+const contract = (
+  leg: 'CE' | 'PE',
+  strike: number,
+  overrides: Partial<PricedOptionContract> = {},
+): PricedOptionContract => ({
+  instrumentKey: `NSE_FO|${leg}-${strike}`,
+  tradingsymbol: `NIFTY ${strike} ${leg}`,
+  strike,
+  lotSize: 65,
+  tickSize: 5,
+  ltp: null,
+  close: null,
+  openInterest: null,
+  volume: null,
+  iv: null,
+  ...overrides,
+});
 
 const CHAIN: OptionChain = {
   underlying: 'NIFTY',
   expiry: '2026-08-25',
   pricedOn: null,
   underlyingPrice: null,
-  calls: [
-    {
-      instrumentKey: 'NSE_FO|CE-24000',
-      tradingsymbol: 'NIFTY 24000 CE',
-      strike: 24000,
-      lotSize: 65,
-      tickSize: 5,
-      ltp: null,
-      close: null,
-      openInterest: null,
-      volume: null,
-      iv: null,
-    },
-    {
-      instrumentKey: 'NSE_FO|CE-24500',
-      tradingsymbol: 'NIFTY 24500 CE',
-      strike: 24500,
-      lotSize: 65,
-      tickSize: 5,
-      ltp: null,
-      close: null,
-      openInterest: null,
-      volume: null,
-      iv: null,
-    },
-  ],
-  puts: [
-    {
-      instrumentKey: 'NSE_FO|PE-24000',
-      tradingsymbol: 'NIFTY 24000 PE',
-      strike: 24000,
-      lotSize: 65,
-      tickSize: 5,
-      ltp: null,
-      close: null,
-      openInterest: null,
-      volume: null,
-      iv: null,
-    },
-  ],
+  calls: [contract('CE', 24000), contract('CE', 24500)],
+  puts: [contract('PE', 24000), contract('PE', 24500)],
 };
 
 const base = environment.apiBase;
 
-describe('ChartStreamPageComponent pickers', () => {
+describe('ChartStreamPageComponent', () => {
   let fixture: ComponentFixture<ChartStreamPageComponent>;
   let http: HttpTestingController;
 
@@ -76,156 +58,307 @@ describe('ChartStreamPageComponent pickers', () => {
     http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`).flush(CHAIN);
   }
 
+  /** The requests the page would hand to its chart panels. */
+  const requests = (): StartStreamRequest[] =>
+    state()
+      .panels()
+      .map((p: { request: StartStreamRequest }) => p.request);
+
   beforeEach(() => {
     TestBed.configureTestingModule({
       imports: [ChartStreamPageComponent],
       // The page injects Router for sign-out; the guard, not this component,
       // is what decides whether it renders at all.
-      providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([]),
+        // A rendered panel would otherwise open a real WebSocket to a backend
+        // that is not running, and retry it on a backoff for the rest of the
+        // suite. What the panels do with their session is the chart
+        // component's spec, not this one's.
+        { provide: ChartStreamSocketService, useValue: { connect: () => EMPTY } },
+      ],
     });
     fixture = TestBed.createComponent(ChartStreamPageComponent);
     http = TestBed.inject(HttpTestingController);
     fixture.detectChanges();
   });
 
-  afterEach(() => http.verify());
-
-  it('populates every picker from the backend, never from a hardcoded list', () => {
-    flushCascade();
-
-    expect(state().underlyings()).toEqual(['BANKNIFTY', 'NIFTY']);
-    expect(state().expiries()).toEqual(['2026-08-25', '2026-09-01']);
-    expect(state().calls().length).toBe(2);
-    expect(state().puts().length).toBe(1);
+  afterEach(() => {
+    // A panel that rendered starts its own session. Answering those here keeps
+    // `verify` about the requests this spec actually asserts on.
+    for (const request of http.match(`${base}/streamer/stream/start`)) {
+      request.flush({
+        sessionId: 's',
+        mode: 'TEST',
+        status: 'RUNNING',
+        instrumentKey: 'k',
+        interval: '1minute',
+        date: '2026-08-14',
+        startedAt: '2026-08-14T03:45:00.000Z',
+        error: null,
+      });
+    }
+    http.verify();
   });
 
-  it('selects the first underlying and defaults the expiry to the nearest one', () => {
-    flushCascade();
+  describe('pickers', () => {
+    it('populates every picker from the backend, never from a hardcoded list', () => {
+      flushCascade();
 
-    expect(state().underlying()).toBe('BANKNIFTY');
-    expect(state().expiry()).toBe('2026-08-25');
-    expect(state().nextExpiry()).toBe('2026-08-25');
+      expect(state().underlyings()).toEqual(['BANKNIFTY', 'NIFTY']);
+      expect(state().expiries()).toEqual(['2026-08-25', '2026-09-01']);
+      expect(state().calls().length).toBe(2);
+      expect(state().puts().length).toBe(2);
+    });
+
+    it('selects the first underlying and defaults the expiry to the nearest one', () => {
+      flushCascade();
+
+      expect(state().underlying()).toBe('BANKNIFTY');
+      expect(state().expiry()).toBe('2026-08-25');
+      expect(state().nextExpiry()).toBe('2026-08-25');
+    });
+
+    // A strike is only meaningful for one underlying/expiry; carrying it across
+    // a change would name a contract that may not exist.
+    it('clears both legs when the underlying changes and reloads the chain', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().putStrike.set(24000);
+
+      state().underlying.set('NIFTY');
+      state().onUnderlyingChange();
+
+      expect(state().callStrike()).toBeNull();
+      expect(state().putStrike()).toBeNull();
+      expect(state().calls()).toEqual([]);
+
+      http
+        .expectOne((r) => r.url === `${base}/streamer/instruments/expiries`)
+        .flush({ underlying: 'NIFTY', expiries: ['2026-08-25'] });
+      http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`).flush(CHAIN);
+
+      expect(state().calls().length).toBe(2);
+    });
+
+    it('does not fetch a chain for INDEX, which has no strikes', () => {
+      flushCascade();
+
+      state().kind.set('INDEX');
+      state().onKindChange();
+
+      expect(state().isOption()).toBeFalse();
+      expect(state().needsExpiry()).toBeFalse();
+      http.expectNone((r) => r.url === `${base}/streamer/instruments/chain`);
+    });
+
+    it('labels a contract with its strike and premium, dashing an unpriced one', () => {
+      flushCascade();
+
+      expect(state().optionLabel(contract('CE', 24000, { ltp: 99.65 }))).toBe(
+        '24000 · ₹99.65 — NIFTY 24000 CE',
+      );
+      expect(state().optionLabel(contract('CE', 24000))).toBe('24000 · — — NIFTY 24000 CE');
+    });
+
+    it('asks for prices as of the replay date in TEST mode', () => {
+      flushCascade();
+
+      state().date.set('2026-08-21');
+      state().onDateChange();
+
+      const req = http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`);
+      expect(req.request.params.get('date')).toBe('2026-08-21');
+      req.flush({ ...CHAIN, pricedOn: '2026-08-21', underlyingPrice: 24252 });
+
+      expect(state().pricedOn()).toBe('2026-08-21');
+      expect(state().underlyingClose()).toBe(24252);
+    });
+
+    // Live prices come from the authenticated chain endpoint, which speaks only
+    // about now — so LIVE sends no date and gets last-traded premiums.
+    it('asks for live prices, not a dated close, in LIVE mode', () => {
+      flushCascade();
+
+      state().mode.set('LIVE');
+      state().date.set('2026-08-21');
+      state().onModeChange();
+
+      const req = http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`);
+      expect(req.request.params.get('date')).toBeNull();
+      req.flush({ ...CHAIN, pricedOn: null, underlyingPrice: 24310 });
+
+      expect(state().pricedOn()).toBe('');
+      expect(state().underlyingClose()).toBe(24310);
+    });
+
+    it('opens on the last weekday and on instant replay, so Start works first time', () => {
+      flushCascade();
+
+      expect(state().replaySpeed()).toBe(0);
+      expect(state().date()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      const day = new Date(`${state().date()}T00:00:00Z`).getUTCDay();
+      expect(day).not.toBe(0);
+      expect(day).not.toBe(6);
+    });
   });
 
-  it('picking a call sets the CE leg and its strike together', () => {
-    flushCascade();
+  describe('starting one leg or two', () => {
+    it('charts only the call when only a call is picked', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().start();
 
-    state().pickCall(24500);
+      expect(state().panels().length).toBe(1);
+      expect(state().panels()[0].leg).toBe('CE');
+      expect(state().panels()[0].label).toBe('NIFTY 24500 CE');
+      expect(requests()[0].instrument).toEqual({
+        type: 'CE',
+        underlying: 'BANKNIFTY',
+        strike: 24500,
+        expiry: '2026-08-25',
+      });
+    });
 
-    expect(state().instrumentType()).toBe('CE');
-    expect(state().strike()).toBe(24500);
-    expect(state().selectedContract()?.tradingsymbol).toBe('NIFTY 24500 CE');
-  });
+    it('charts only the put when only a put is picked', () => {
+      flushCascade();
+      state().putStrike.set(24000);
+      state().start();
 
-  it('picking a put switches the leg to PE, so the two ladders are one choice', () => {
-    flushCascade();
+      expect(state().panels().length).toBe(1);
+      expect(state().panels()[0].leg).toBe('PE');
+      expect(requests()[0].instrument.type).toBe('PE');
+    });
 
-    state().pickCall(24000);
-    state().pickPut(24000);
+    // The point of the two independent dropdowns: a strategy has two legs and
+    // they are watched together, not one after the other.
+    it('charts both legs at once when a call and a put are both picked', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().putStrike.set(24000);
+      state().start();
 
-    expect(state().instrumentType()).toBe('PE');
-    expect(state().strike()).toBe(24000);
-    expect(state().selectedContract()?.tradingsymbol).toBe('NIFTY 24000 PE');
-  });
+      const panels = state().panels();
+      expect(panels.length).toBe(2);
+      expect(panels.map((p: { leg: string }) => p.leg)).toEqual(['CE', 'PE']);
+      expect(panels.map((p: { label: string }) => p.label)).toEqual([
+        'NIFTY 24500 CE',
+        'NIFTY 24000 PE',
+      ]);
+      // Two independent sessions, so one leg failing to resolve cannot take
+      // the other down.
+      expect(requests().map((r) => r.instrument.strike)).toEqual([24500, 24000]);
+      // Same day, same speed, same history — the two run off one clock.
+      expect(requests()[0].date).toBe(requests()[1].date);
+      expect(requests()[0].replaySpeed).toBe(requests()[1].replaySpeed);
+    });
 
-  // A strike is only meaningful for one underlying/expiry; carrying it across a
-  // change would send a contract that may not exist.
-  it('clears the strike when the underlying changes and reloads the chain', () => {
-    flushCascade();
-    state().pickCall(24500);
+    it('gives the two panels distinct keys so neither reuses the other canvas', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().putStrike.set(24500); // same strike, different leg
+      state().start();
 
-    state().underlying.set('NIFTY');
-    state().onUnderlyingChange();
+      const [a, b] = state().panels();
+      expect(a.key).not.toBe(b.key);
+    });
 
-    expect(state().strike()).toBeNull();
-    expect(state().calls()).toEqual([]);
+    it('says up front what Start will do', () => {
+      flushCascade();
+      expect(state().plan()).toContain('Select a call');
 
-    http
-      .expectOne((r) => r.url === `${base}/streamer/instruments/expiries`)
-      .flush({ underlying: 'NIFTY', expiries: ['2026-08-25'] });
-    http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`).flush(CHAIN);
+      state().callStrike.set(24500);
+      expect(state().plan()).toContain('NIFTY 24500 CE');
 
-    expect(state().calls().length).toBe(2);
-  });
+      state().putStrike.set(24000);
+      expect(state().plan()).toContain('side by side');
+    });
 
-  it('does not fetch a chain for INDEX, which has no strikes', () => {
-    flushCascade();
+    it('refuses to start an option with neither leg picked', () => {
+      flushCascade();
 
-    state().instrumentType.set('INDEX');
-    state().onTypeChange();
+      state().start();
 
-    expect(state().isOption()).toBeFalse();
-    expect(state().needsExpiry()).toBeFalse();
-    http.expectNone((r) => r.url === `${base}/streamer/instruments/chain`);
-  });
+      expect(state().formError()).toContain('Pick a call, a put, or both');
+      expect(state().panels()).toEqual([]);
+    });
 
-  it('refuses to start an option with no strike picked', () => {
-    flushCascade();
+    it('refuses TEST with no date, which the backend would reject as a 400', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().date.set('');
 
-    state().start();
+      state().start();
 
-    expect(state().formError()).toContain('Pick a strike');
-  });
+      expect(state().formError()).toContain('session date');
+      expect(state().panels()).toEqual([]);
+    });
 
-  it('labels a contract with its strike and close, dashing an unpriced one', () => {
-    flushCascade();
+    it('charts the underlying itself for INDEX, with no strike or expiry', () => {
+      flushCascade();
+      state().kind.set('INDEX');
+      state().onKindChange();
 
-    expect(state().label({ ...CHAIN.calls[0], ltp: 99.65 })).toBe(
-      '24000 · ₹99.65 — NIFTY 24000 CE',
-    );
-    expect(state().label(CHAIN.calls[0])).toBe('24000 · — — NIFTY 24000 CE');
-  });
+      state().start();
 
-  it('asks for prices as of the replay date in TEST mode', () => {
-    flushCascade();
+      expect(state().panels().length).toBe(1);
+      expect(state().panels()[0].leg).toBeNull();
+      expect(requests()[0].instrument).toEqual({ type: 'INDEX', underlying: 'BANKNIFTY' });
+    });
 
-    state().date.set('2026-08-21');
-    state().onDateChange();
+    it('sends historyDays only when prior days were asked for', () => {
+      flushCascade();
+      state().callStrike.set(24500);
 
-    const req = http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`);
-    expect(req.request.params.get('date')).toBe('2026-08-21');
-    req.flush({ ...CHAIN, pricedOn: '2026-08-21', underlyingPrice: 24252 });
+      state().historyDays.set(0);
+      state().start();
+      expect(requests()[0].historyDays).toBeUndefined();
 
-    expect(state().pricedOn()).toBe('2026-08-21');
-    expect(state().underlyingClose()).toBe(24252);
-  });
+      state().historyDays.set(2);
+      state().start();
+      expect(requests()[0].historyDays).toBe(2);
+    });
 
-  // Live prices come from the authenticated chain endpoint, which speaks only
-  // about now — so LIVE sends no date and gets last-traded premiums.
-  it('asks for live prices, not a dated close, in LIVE mode', () => {
-    flushCascade();
+    // The wire timeframe is fixed and the chart resamples: that is what lets
+    // LIVE offer every interval, since the live builder only makes 1-minute bars.
+    it('always asks the backend for 1-minute bars, whatever the display interval', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().displaySeconds.set(900);
 
-    state().mode.set('LIVE');
-    state().date.set('2026-08-21');
-    state().onExpiryChange();
+      state().start();
 
-    const req = http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`);
-    expect(req.request.params.get('date')).toBeNull();
-    req.flush({ ...CHAIN, pricedOn: null, underlyingPrice: 24310 });
+      expect(requests()[0].interval).toBe('1minute');
+    });
 
-    expect(state().pricedOn()).toBe('');
-    expect(state().underlyingClose()).toBe(24310);
-  });
+    it('omits date and replaySpeed in LIVE mode, which rejects both', () => {
+      flushCascade();
+      state().mode.set('LIVE');
+      state().onModeChange();
+      http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`).flush(CHAIN);
 
-  it('sends historyDays only when prior days were asked for', () => {
-    flushCascade();
-    state().pickCall(24500);
+      state().callStrike.set(24500);
+      state().start();
 
-    const started: unknown[] = [];
-    state().chart = () => ({ start: (r: unknown) => started.push(r) });
+      const request = requests()[0];
+      expect(request.mode).toBe('LIVE');
+      expect(request.date).toBeUndefined();
+      expect(request.replaySpeed).toBeUndefined();
+    });
 
-    state().historyDays.set(0);
-    state().start();
-    expect((started[0] as { historyDays?: number }).historyDays).toBeUndefined();
+    it('hands a fresh request object on every Start, so the same panel restarts', () => {
+      flushCascade();
+      state().callStrike.set(24500);
 
-    state().historyDays.set(2);
-    state().start();
-    expect((started[1] as { historyDays?: number }).historyDays).toBe(2);
-  });
+      state().start();
+      const first = requests()[0];
+      state().start();
+      const second = requests()[0];
 
-  it('defaults the replay speed to instant', () => {
-    flushCascade();
-
-    expect(state().replaySpeed()).toBe(0);
+      expect(second).not.toBe(first);
+      expect(second).toEqual(first);
+    });
   });
 });

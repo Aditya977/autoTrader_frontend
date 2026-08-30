@@ -24,6 +24,7 @@ const REASONS: Record<string, string> = {
   template: `
     <main>
       <section class="card">
+        <span class="mark">◧</span>
         <h1>Sign in to Upstox</h1>
 
         <p class="lead">
@@ -49,10 +50,6 @@ const REASONS: Record<string, string> = {
   styles: `
     :host {
       display: block;
-      font-family:
-        system-ui,
-        -apple-system,
-        sans-serif;
     }
 
     main {
@@ -60,63 +57,67 @@ const REASONS: Record<string, string> = {
       display: grid;
       place-items: center;
       padding: 1.5rem;
-      background: #f8fafc;
+      /* A single soft light source behind the card, so the sign-in screen is
+         not simply a flat rectangle on a flat page. */
+      background:
+        radial-gradient(60rem 40rem at 50% -10%, rgba(59, 167, 255, 0.12), transparent 70%),
+        var(--bg);
     }
 
     .card {
-      width: min(30rem, 100%);
-      background: #fff;
-      border: 1px solid #e2e8f0;
-      border-radius: 0.75rem;
+      width: min(28rem, 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
       padding: 2rem;
-      box-shadow: 0 1px 3px rgb(15 23 42 / 8%);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      margin-bottom: 1rem;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), #1b6fae);
+      color: #06121d;
+      font-size: 1.2rem;
     }
 
     h1 {
-      margin: 0 0 0.75rem;
-      font-size: 1.25rem;
-      color: #0f172a;
+      margin: 0 0 0.6rem;
+      font-size: 1.15rem;
     }
 
     .lead {
       margin: 0 0 1.25rem;
-      font-size: 0.9375rem;
-      line-height: 1.5;
-      color: #475569;
+      font-size: 0.875rem;
+      line-height: 1.6;
+      color: var(--text-muted);
     }
 
     .notice {
       margin: 0 0 1.25rem;
-      padding: 0.625rem 0.75rem;
-      border-radius: 0.375rem;
-      background: #fffbeb;
-      border: 1px solid #fde68a;
-      color: #92400e;
-      font-size: 0.875rem;
+      padding: 0.6rem 0.75rem;
+      border-radius: var(--radius-sm);
+      background: rgba(224, 164, 88, 0.12);
+      border: 1px solid rgba(224, 164, 88, 0.3);
+      color: #f0c48a;
+      font-size: 0.82rem;
     }
 
     button.primary {
       width: 100%;
-      padding: 0.625rem 1rem;
-      border: 0;
-      border-radius: 0.375rem;
-      background: #2563eb;
-      color: #fff;
-      font-size: 0.9375rem;
-      font-weight: 500;
-      cursor: pointer;
-    }
-
-    button.primary:disabled {
-      background: #93c5fd;
-      cursor: default;
+      padding: 0.6rem 1rem;
+      font-size: 0.9rem;
     }
 
     .fine {
       margin: 1.25rem 0 0;
-      font-size: 0.8125rem;
-      line-height: 1.5;
-      color: #64748b;
+      font-size: 0.78rem;
+      line-height: 1.6;
+      color: var(--text-faint);
     }
   `,
 })

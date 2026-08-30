@@ -1,30 +1,19 @@
-import { Component, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { DestroyRef } from '@angular/core';
 import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
 import { UpstoxAuthService } from '../auth/upstox-auth.service';
+import { DISPLAY_INTERVALS } from './chart-time';
 import type {
-  ChartInterval,
   ChartSessionMode,
   InstrumentRequest,
   InstrumentType,
   PricedOptionContract,
   StartStreamRequest,
 } from './chart-stream.models';
-
-const INTERVALS: ChartInterval[] = [
-  '1minute',
-  '3minute',
-  '5minute',
-  '15minute',
-  '30minute',
-  '1hour',
-  '1day',
-];
 
 /**
  * What the picker offers.
@@ -33,24 +22,29 @@ const INTERVALS: ChartInterval[] = [
  * rejects it at resolution every time (this deployment's instrument master
  * syncs only index derivatives), and an option that always fails is worse than
  * one that is not there.
+ *
+ * `OPTIONS` is one entry rather than the CE/PE pair the backend's
+ * `InstrumentType` uses, because a call and a put are no longer alternatives
+ * here — either or both can be charted, and forcing the user to declare a leg
+ * before picking a strike is what made charting both impossible.
  */
-const INSTRUMENT_TYPES: { value: InstrumentType; label: string }[] = [
+type InstrumentKind = 'INDEX' | 'FUTURE' | 'OPTIONS';
+
+const INSTRUMENT_KINDS: { value: InstrumentKind; label: string }[] = [
+  { value: 'OPTIONS', label: 'Options' },
   { value: 'INDEX', label: 'Index' },
   { value: 'FUTURE', label: 'Future' },
-  { value: 'CE', label: 'Call option (CE)' },
-  { value: 'PE', label: 'Put option (PE)' },
 ];
 
 /**
  * Replay pace, as choices rather than a free number.
  *
- * `0` is the useful default and was previously unusable: the session finished
- * before the socket opened and the chart stayed empty. The backend now replays
- * its backlog on connect, so "instant" genuinely means the whole day appears at
- * once. The paced options remain for watching a session unfold.
+ * `0` is the useful default: the backend replays its whole backlog to whoever
+ * connects, so "instant" genuinely means the day appears at once. The paced
+ * options remain for watching a session unfold.
  */
 const REPLAY_SPEEDS: { value: number; label: string }[] = [
-  { value: 0, label: 'Instant (whole day at once)' },
+  { value: 0, label: 'Instant — whole day at once' },
   { value: 120, label: 'Very fast (120×)' },
   { value: 60, label: 'Fast (60×)' },
   { value: 30, label: 'Medium (30×)' },
@@ -67,269 +61,449 @@ const HISTORY_CHOICES: { value: number; label: string }[] = [
   { value: 10, label: '+ previous 10 days' },
 ];
 
+/**
+ * The most recent weekday before today, as `YYYY-MM-DD` in IST.
+ *
+ * A starting point, not a claim about the exchange calendar — it does not know
+ * about holidays, and a holiday simply comes back with no bars and says so. The
+ * point is that the date field opens on something replayable instead of empty,
+ * which is otherwise the single most common reason Start fails on first use.
+ */
+function lastWeekdayKey(now: Date): string {
+  const ist = new Date(now.getTime() + 5.5 * 3_600_000);
+  do {
+    ist.setUTCDate(ist.getUTCDate() - 1);
+  } while (ist.getUTCDay() === 0 || ist.getUTCDay() === 6);
+  return ist.toISOString().slice(0, 10);
+}
+
+/** One running chart: an instrument, and the session request that fills it. */
+interface ChartPanel {
+  /**
+   * Identity for `@for`, so the CE panel keeps its chart instance when the PE
+   * panel is added or removed beside it. Deliberately excludes the run counter:
+   * pressing Start again should restart the same panel, not tear down its
+   * canvas and build a new one.
+   */
+  key: string;
+  label: string;
+  leg: 'CE' | 'PE' | null;
+  request: StartStreamRequest;
+}
+
 @Component({
   selector: 'app-chart-stream-page',
   standalone: true,
   imports: [DatePipe, FormsModule, ChartStreamComponent],
   template: `
-    <section class="panel">
-      <header class="bar">
-        <h1>Chart stream</h1>
-        <span class="session">
-          Signed in to Upstox
-          @if (auth.expiresAt(); as until) {
-            <span class="until">· until {{ until | date: 'shortTime' }}</span>
-          }
-          <button type="button" class="link" (click)="signOut()">Sign out</button>
-        </span>
-      </header>
-
-      <div class="row">
-        <label>
-          Mode
-          <select [(ngModel)]="mode" name="mode">
-            <option value="TEST">TEST (replay)</option>
-            <option value="LIVE">LIVE</option>
-          </select>
-        </label>
-
-        <label>
-          Type
-          <select [(ngModel)]="instrumentType" name="type" (ngModelChange)="onTypeChange()">
-            @for (t of instrumentTypes; track t.value) {
-              <option [value]="t.value">{{ t.label }}</option>
-            }
-          </select>
-        </label>
-
-        <label>
-          Underlying
-          <select
-            [(ngModel)]="underlying"
-            name="underlying"
-            (ngModelChange)="onUnderlyingChange()"
-            [disabled]="underlyings().length === 0"
-          >
-            @for (u of underlyings(); track u) {
-              <option [value]="u">{{ u }}</option>
-            }
-          </select>
-        </label>
-
-        @if (needsExpiry()) {
-          <label>
-            Expiry
-            <select
-              [(ngModel)]="expiry"
-              name="expiry"
-              (ngModelChange)="onExpiryChange()"
-              [disabled]="expiries().length === 0"
-            >
-              @for (e of expiries(); track e) {
-                <option [value]="e">{{ e }}{{ e === nextExpiry() ? ' (next)' : '' }}</option>
-              }
-            </select>
-          </label>
-        }
-
-        @if (isOption()) {
-          <label>
-            Calls
-            <select
-              [ngModel]="instrumentType() === 'CE' ? strike() : null"
-              name="call"
-              (ngModelChange)="pickCall($event)"
-              [disabled]="calls().length === 0"
-            >
-              <option [ngValue]="null" disabled>
-                {{ chainPlaceholder(calls().length) }}
-              </option>
-              @for (c of calls(); track c.instrumentKey) {
-                <option [ngValue]="c.strike">{{ label(c) }}</option>
-              }
-            </select>
-          </label>
-
-          <label>
-            Puts
-            <select
-              [ngModel]="instrumentType() === 'PE' ? strike() : null"
-              name="put"
-              (ngModelChange)="pickPut($event)"
-              [disabled]="puts().length === 0"
-            >
-              <option [ngValue]="null" disabled>
-                {{ chainPlaceholder(puts().length) }}
-              </option>
-              @for (p of puts(); track p.instrumentKey) {
-                <option [ngValue]="p.strike">{{ label(p) }}</option>
-              }
-            </select>
-          </label>
-        }
-
-        <label>
-          Interval
-          <select [(ngModel)]="interval" name="interval" [disabled]="mode() === 'LIVE'">
-            @for (i of intervals; track i) {
-              <option [value]="i">{{ i }}</option>
-            }
-          </select>
-        </label>
-
-        @if (mode() === 'TEST') {
-          <label>
-            Date
-            <input type="date" [(ngModel)]="date" name="date" (ngModelChange)="onDateChange()" />
-          </label>
-
-          <label>
-            Replay speed
-            <select [(ngModel)]="replaySpeed" name="replaySpeed">
-              @for (s of speeds; track s.value) {
-                <option [ngValue]="s.value">{{ s.label }}</option>
-              }
-            </select>
-          </label>
-        }
-
-        <label>
-          History
-          <select [(ngModel)]="historyDays" name="historyDays">
-            @for (h of historyChoices; track h.value) {
-              <option [ngValue]="h.value">{{ h.label }}</option>
-            }
-          </select>
-        </label>
-
-        <button type="button" (click)="start()">Start</button>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark">◧</span>
+        <div>
+          <h1>Chart stream</h1>
+          <span class="sub">Upstox live &amp; replay</span>
+        </div>
       </div>
 
-      @if (selectedContract(); as contract) {
-        <p class="hint">
-          Selected <strong>{{ contract.tradingsymbol }}</strong> — strike {{ contract.strike }}, lot
-          {{ contract.lotSize }}, tick {{ contract.tickSize }}
-          @if (contract.close !== null) {
-            <span>, closed {{ contract.close }} on {{ pricedOn() }}</span>
+      <div class="account">
+        <span class="badge"><i class="dot"></i>Signed in</span>
+        @if (auth.expiresAt(); as until) {
+          <span class="until">until {{ until | date: 'shortTime' }}</span>
+        }
+        <button type="button" class="link" (click)="signOut()">Sign out</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="controls" [class.busy]="chainLoading()">
+        <div class="fields">
+          <label>
+            <span>Mode</span>
+            <select [(ngModel)]="mode" name="mode" (ngModelChange)="onModeChange()">
+              <option value="TEST">Test — replay a past day</option>
+              <option value="LIVE">Live</option>
+            </select>
+          </label>
+
+          <label>
+            <span>Instrument</span>
+            <select [(ngModel)]="kind" name="kind" (ngModelChange)="onKindChange()">
+              @for (k of instrumentKinds; track k.value) {
+                <option [value]="k.value">{{ k.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label>
+            <span>Underlying</span>
+            <select
+              [(ngModel)]="underlying"
+              name="underlying"
+              (ngModelChange)="onUnderlyingChange()"
+              [disabled]="underlyings().length === 0"
+            >
+              @for (u of underlyings(); track u) {
+                <option [value]="u">{{ u }}</option>
+              }
+            </select>
+          </label>
+
+          @if (needsExpiry()) {
+            <label>
+              <span>Expiry</span>
+              <select
+                [(ngModel)]="expiry"
+                name="expiry"
+                (ngModelChange)="onExpiryChange()"
+                [disabled]="expiries().length === 0"
+              >
+                @for (e of expiries(); track e) {
+                  <option [value]="e">{{ e }}{{ e === nextExpiry() ? ' · next' : '' }}</option>
+                }
+              </select>
+            </label>
           }
-          .
-        </p>
-      }
 
-      @if (isOption() && calls().length) {
-        <p class="hint">
-          @if (pricedOn()) {
-            Prices are each contract's <strong>close on {{ pricedOn() }}</strong> (spot
-            {{ underlyingClose() ?? '—' }}), for the strikes nearest at-the-money; strikes further
-            out show <code>—</code> and are still selectable.
-          } @else {
-            Prices are <strong>live last-traded premiums</strong> from your Upstox session (spot
-            {{ underlyingClose() ?? '—' }}), for every strike in the chain.
+          @if (isOption()) {
+            <label class="leg call">
+              <span>Call (CE)</span>
+              <select
+                [ngModel]="callStrike()"
+                name="call"
+                (ngModelChange)="callStrike.set($event)"
+                [disabled]="calls().length === 0"
+              >
+                <option [ngValue]="null">{{ chainPlaceholder(calls().length) }}</option>
+                @for (c of calls(); track c.instrumentKey) {
+                  <option [ngValue]="c.strike">{{ optionLabel(c) }}</option>
+                }
+              </select>
+            </label>
+
+            <label class="leg put">
+              <span>Put (PE)</span>
+              <select
+                [ngModel]="putStrike()"
+                name="put"
+                (ngModelChange)="putStrike.set($event)"
+                [disabled]="puts().length === 0"
+              >
+                <option [ngValue]="null">{{ chainPlaceholder(puts().length) }}</option>
+                @for (p of puts(); track p.instrumentKey) {
+                  <option [ngValue]="p.strike">{{ optionLabel(p) }}</option>
+                }
+              </select>
+            </label>
           }
-        </p>
-      }
 
-      @if (mode() === 'LIVE') {
-        <p class="hint">
-          LIVE accepts <code>1minute</code> only; aggregate coarser bars client-side.
-        </p>
-      }
+          @if (mode() === 'TEST') {
+            <label>
+              <span>Session date</span>
+              <input type="date" [(ngModel)]="date" name="date" (ngModelChange)="onDateChange()" />
+            </label>
 
-      @if (formError(); as message) {
-        <p class="hint warn">{{ message }}</p>
-      }
-    </section>
+            <label>
+              <span>Replay speed</span>
+              <select [(ngModel)]="replaySpeed" name="replaySpeed">
+                @for (s of speeds; track s.value) {
+                  <option [ngValue]="s.value">{{ s.label }}</option>
+                }
+              </select>
+            </label>
+          }
 
-    <app-chart-stream />
+          <label>
+            <span>History</span>
+            <select [(ngModel)]="historyDays" name="historyDays">
+              @for (h of historyChoices; track h.value) {
+                <option [ngValue]="h.value">{{ h.label }}</option>
+              }
+            </select>
+          </label>
+        </div>
+
+        <div class="actions">
+          <div class="timeframe" role="group" aria-label="Bar interval">
+            @for (i of displayIntervals; track i.seconds) {
+              <button
+                type="button"
+                [class.on]="displaySeconds() === i.seconds"
+                (click)="displaySeconds.set(i.seconds)"
+              >
+                {{ i.label }}
+              </button>
+            }
+          </div>
+
+          <p class="plan">{{ plan() }}</p>
+          <button type="button" class="primary" (click)="start()">Start</button>
+        </div>
+
+        @if (formError(); as message) {
+          <p class="notice warn">{{ message }}</p>
+        }
+
+        @if (isOption() && calls().length) {
+          <p class="notice">
+            @if (pricedOn()) {
+              Premiums are each contract's <strong>close on {{ pricedOn() }}</strong> (spot
+              {{ underlyingClose() ?? '—' }}), for the strikes nearest at-the-money; strikes further
+              out show <code>—</code> and stay selectable.
+            } @else {
+              Premiums are <strong>live last-traded</strong> from your Upstox session (spot
+              {{ underlyingClose() ?? '—' }}), for every strike in the chain.
+            }
+            Pick a call, a put, or both — both charts run side by side off the same clock.
+          </p>
+        }
+      </section>
+
+      @if (panels().length) {
+        <section class="grid" [class.pair]="panels().length > 1">
+          @for (panel of panels(); track panel.key) {
+            <app-chart-stream
+              [request]="panel.request"
+              [label]="panel.label"
+              [leg]="panel.leg"
+              [displaySeconds]="displaySeconds()"
+            />
+          }
+        </section>
+      } @else {
+        <section class="placeholder">
+          <p>Nothing streaming yet.</p>
+          <p class="hint">
+            Choose an instrument above and press <strong>Start</strong>. Select a call
+            <em>and</em> a put to watch both legs of a strategy at once.
+          </p>
+        </section>
+      }
+    </main>
   `,
   styles: `
     :host {
       display: block;
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 1.5rem;
-      font-family:
-        system-ui,
-        -apple-system,
-        sans-serif;
+      min-height: 100%;
     }
 
-    .bar {
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
       display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
+      align-items: center;
       justify-content: space-between;
-      gap: 0.5rem;
-      margin: 0 0 1rem;
+      gap: 1rem;
+      padding: 0.75rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 15, 20, 0.85);
+      backdrop-filter: blur(8px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent), #1b6fae);
+      color: #06121d;
+      font-size: 1rem;
     }
 
     h1 {
-      margin: 0;
-      font-size: 1.25rem;
+      font-size: 0.95rem;
+      line-height: 1.2;
     }
 
-    .session {
-      font-size: 0.75rem;
-      color: #64748b;
+    .sub {
+      font-size: 0.72rem;
+      color: var(--text-faint);
     }
 
-    .session .until {
-      margin-right: 0.375rem;
-    }
-
-    .row {
+    .account {
       display: flex;
-      flex-wrap: wrap;
+      align-items: center;
       gap: 0.75rem;
-      align-items: flex-end;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.5rem;
+      border-radius: 99px;
+      background: rgba(38, 161, 123, 0.14);
+      color: #4fd1a5;
+      font-weight: 500;
+    }
+
+    .badge .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    main {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 1.25rem 1.5rem 3rem;
+      display: grid;
+      gap: 1.25rem;
+    }
+
+    .controls {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 1rem 1.1rem;
+      transition: opacity 0.15s ease;
+    }
+
+    .controls.busy .fields {
+      opacity: 0.7;
+    }
+
+    .fields {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 0.75rem 0.9rem;
     }
 
     label {
       display: flex;
       flex-direction: column;
-      gap: 0.25rem;
-      font-size: 0.75rem;
-      color: #475569;
+      gap: 0.3rem;
+      min-width: 0;
     }
 
-    input,
-    select {
-      padding: 0.375rem 0.5rem;
-      border: 1px solid #cbd5e1;
-      border-radius: 0.25rem;
-      font-size: 0.875rem;
+    label > span {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-faint);
     }
 
-    select:disabled {
-      background: #f1f5f9;
-      color: #94a3b8;
+    /* The two option legs are the only place colour carries meaning in the
+       form, and it is the same green/red the charts use for direction. */
+    label.leg.call > span {
+      color: #4fd1a5;
     }
 
-    button {
-      padding: 0.4rem 0.9rem;
+    label.leg.put > span {
+      color: #ff8a87;
+    }
+
+    label.leg.call select:hover:not(:disabled) {
+      border-color: rgba(79, 209, 165, 0.6);
+    }
+
+    label.leg.put select:hover:not(:disabled) {
+      border-color: rgba(255, 138, 135, 0.6);
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1rem;
+      padding-top: 0.9rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .timeframe {
+      display: inline-flex;
+      padding: 2px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+    }
+
+    .timeframe button {
       border: 0;
-      border-radius: 0.25rem;
-      background: #2563eb;
-      color: #fff;
-      font-size: 0.875rem;
-      cursor: pointer;
-    }
-
-    button.link {
       background: none;
-      color: #2563eb;
-      text-decoration: underline;
-      padding: 0;
+      padding: 0.3rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
     }
 
-    .hint {
-      margin: 0.75rem 0 0;
-      font-size: 0.8125rem;
-      color: #64748b;
+    .timeframe button.on {
+      background: var(--surface-3);
+      color: var(--text);
     }
 
-    .hint.warn {
-      color: #b45309;
+    .plan {
+      flex: 1 1 240px;
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .notice {
+      margin: 0.85rem 0 0;
+      padding: 0.5rem 0.7rem;
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .notice.warn {
+      background: rgba(224, 164, 88, 0.12);
+      color: #f0c48a;
+    }
+
+    .notice strong {
+      color: var(--text);
+    }
+
+    .grid {
+      display: grid;
+      gap: 1rem;
+    }
+
+    /* Two legs sit side by side once there is room for both to stay readable;
+       below that they stack, which is still a comparison, just a vertical one. */
+    @media (min-width: 1180px) {
+      .grid.pair {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .placeholder {
+      display: grid;
+      place-content: center;
+      gap: 0.35rem;
+      min-height: 320px;
+      padding: 2rem;
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius);
+      text-align: center;
+      color: var(--text-muted);
+    }
+
+    .placeholder p {
+      margin: 0;
+    }
+
+    .placeholder .hint {
+      max-width: 46ch;
+      font-size: 0.82rem;
+      color: var(--text-faint);
     }
   `,
 })
@@ -339,22 +513,31 @@ export class ChartStreamPageComponent {
   protected readonly auth = inject(UpstoxAuthService);
   private readonly router = inject(Router);
 
-  private readonly chart = viewChild.required(ChartStreamComponent);
-
-  protected readonly intervals = INTERVALS;
-  protected readonly instrumentTypes = INSTRUMENT_TYPES;
+  protected readonly instrumentKinds = INSTRUMENT_KINDS;
   protected readonly speeds = REPLAY_SPEEDS;
   protected readonly historyChoices = HISTORY_CHOICES;
+  protected readonly displayIntervals = DISPLAY_INTERVALS;
 
   protected readonly mode = signal<ChartSessionMode>('TEST');
-  protected readonly instrumentType = signal<InstrumentType>('CE');
+  protected readonly kind = signal<InstrumentKind>('OPTIONS');
   protected readonly underlying = signal('');
-  protected readonly strike = signal<number | null>(null);
+  /** The two legs are independent: either, neither, or both may be charted. */
+  protected readonly callStrike = signal<number | null>(null);
+  protected readonly putStrike = signal<number | null>(null);
   protected readonly expiry = signal('');
-  protected readonly interval = signal<ChartInterval>('1minute');
-  protected readonly date = signal('');
+  protected readonly date = signal(lastWeekdayKey(new Date()));
   protected readonly replaySpeed = signal(0);
   protected readonly historyDays = signal(0);
+  /**
+   * Bar width on screen, in seconds.
+   *
+   * A *display* concern, not a request field: the backend streams one-minute
+   * bars and the chart resamples them, so changing this re-buckets what is
+   * already on screen instead of restarting the session. That is also what
+   * lets LIVE mode offer every interval — the wire is always `1minute`, which
+   * is the only thing the live candle builder produces.
+   */
+  protected readonly displaySeconds = signal<number>(60);
 
   /**
    * Every list below is server-supplied and never hardcoded — the instrument
@@ -371,23 +554,48 @@ export class ChartStreamPageComponent {
   protected readonly underlyingClose = signal<number | null>(null);
 
   protected readonly formError = signal<string | null>(null);
+  protected readonly panels = signal<ChartPanel[]>([]);
 
-  protected readonly isOption = computed(
-    () => this.instrumentType() === 'CE' || this.instrumentType() === 'PE',
-  );
-  protected readonly needsExpiry = computed(
-    () => this.isOption() || this.instrumentType() === 'FUTURE',
-  );
+  protected readonly isOption = computed(() => this.kind() === 'OPTIONS');
+  protected readonly needsExpiry = computed(() => this.kind() !== 'INDEX');
 
   /** Expiries arrive ascending, so the nearest one is simply the first. */
   protected readonly nextExpiry = computed(() => this.expiries()[0] ?? '');
 
-  /** The contract the current type/strike pair points at, for the confirmation line. */
-  protected readonly selectedContract = computed(() => {
-    const strike = this.strike();
-    if (!this.isOption() || strike === null) return null;
-    const ladder = this.instrumentType() === 'CE' ? this.calls() : this.puts();
-    return ladder.find((c) => c.strike === strike) ?? null;
+  /** What pressing Start will do, stated before it is pressed. */
+  protected readonly plan = computed(() => {
+    const legs = this.selectedLegs();
+    if (!legs.length) {
+      return this.isOption()
+        ? 'Select a call and/or a put to chart.'
+        : `Charts ${this.underlying() || 'the underlying'}.`;
+    }
+    return legs.length === 1
+      ? `Charts ${legs[0].label}.`
+      : `Charts ${legs[0].label} and ${legs[1].label} side by side.`;
+  });
+
+  /**
+   * The contracts currently chosen, in call-then-put order.
+   *
+   * One list rather than two nullable fields because everything downstream —
+   * validation, the plan line, the panels — wants "what is selected", and the
+   * count is the only thing that differs between one chart and two.
+   */
+  private readonly selectedLegs = computed<
+    { leg: 'CE' | 'PE'; strike: number; label: string }[]
+  >(() => {
+    if (!this.isOption()) return [];
+    const legs: { leg: 'CE' | 'PE'; strike: number; label: string }[] = [];
+    const call = this.callStrike();
+    if (call !== null) {
+      legs.push({ leg: 'CE', strike: call, label: this.contractName('CE', call) });
+    }
+    const put = this.putStrike();
+    if (put !== null) {
+      legs.push({ leg: 'PE', strike: put, label: this.contractName('PE', put) });
+    }
+    return legs;
   });
 
   constructor() {
@@ -410,7 +618,7 @@ export class ChartStreamPageComponent {
 
   protected chainPlaceholder(count: number): string {
     if (this.chainLoading()) return 'Loading…';
-    return count === 0 ? 'No contracts' : 'Select a strike';
+    return count === 0 ? 'No contracts' : 'None';
   }
 
   /**
@@ -420,9 +628,18 @@ export class ChartStreamPageComponent {
    * the ladder reads as a price ladder. An unpriced contract keeps its slot and
    * shows a dash rather than being hidden — it is still selectable.
    */
-  protected label(contract: PricedOptionContract): string {
+  protected optionLabel(contract: PricedOptionContract): string {
     const price = contract.ltp === null ? '—' : `₹${contract.ltp}`;
     return `${contract.strike} · ${price} — ${contract.tradingsymbol}`;
+  }
+
+  /** The tradingsymbol for a chosen strike, falling back to a readable name. */
+  private contractName(leg: 'CE' | 'PE', strike: number): string {
+    const ladder = leg === 'CE' ? this.calls() : this.puts();
+    return (
+      ladder.find((c) => c.strike === strike)?.tradingsymbol ??
+      `${this.underlying()} ${strike} ${leg}`
+    );
   }
 
   /** Underlyings first: everything else is scoped by whichever one is chosen. */
@@ -442,15 +659,13 @@ export class ChartStreamPageComponent {
       });
   }
 
-  protected onTypeChange(): void {
-    // A strike carried over from the other leg would name a contract that may
-    // not exist on this one.
-    this.strike.set(null);
+  protected onKindChange(): void {
+    this.clearLegs();
     if (this.needsExpiry()) this.loadExpiries();
   }
 
   protected onUnderlyingChange(): void {
-    this.strike.set(null);
+    this.clearLegs();
     this.expiry.set('');
     this.calls.set([]);
     this.puts.set([]);
@@ -458,17 +673,29 @@ export class ChartStreamPageComponent {
   }
 
   protected onExpiryChange(): void {
-    this.strike.set(null);
+    this.clearLegs();
     this.loadChain();
   }
 
   /**
    * The listed closes are as of the replay date, so changing the date changes
-   * the prices. The strike survives — the same contract at a different date is
+   * the prices. The strikes survive — the same contract at a different date is
    * still the contract the user picked.
    */
   protected onDateChange(): void {
     this.loadChain();
+  }
+
+  /** LIVE prices the chain as it stands now; TEST prices it as of the date. */
+  protected onModeChange(): void {
+    this.loadChain();
+  }
+
+  private clearLegs(): void {
+    // A strike carried over would name a contract that may not exist on the
+    // new underlying or expiry.
+    this.callStrike.set(null);
+    this.putStrike.set(null);
   }
 
   protected loadExpiries(): void {
@@ -526,54 +753,75 @@ export class ChartStreamPageComponent {
   }
 
   /**
-   * Picking from a ladder sets the leg as well as the strike — the two pickers
-   * are one choice presented as two lists, so selecting a call *means* CE.
+   * Builds one session request per selected leg and hands them to the charts.
+   *
+   * Two legs are two independent backend sessions, not one multi-instrument
+   * session: they are already independent on the wire (a session streams one
+   * instrument key), and keeping them separate means one leg failing to
+   * resolve leaves the other charting rather than taking both down.
    */
-  protected pickCall(strike: number | null): void {
-    if (strike === null) return;
-    this.instrumentType.set('CE');
-    this.strike.set(strike);
-  }
-
-  protected pickPut(strike: number | null): void {
-    if (strike === null) return;
-    this.instrumentType.set('PE');
-    this.strike.set(strike);
-  }
-
   protected start(): void {
     this.formError.set(null);
 
-    const instrument: InstrumentRequest = {
-      type: this.instrumentType(),
-      underlying: this.underlying().trim(),
-    };
-    if (!instrument.underlying) {
+    const underlying = this.underlying().trim();
+    if (!underlying) {
       this.formError.set('Pick an underlying.');
       return;
     }
-    if (this.isOption()) {
-      const strike = this.strike();
-      if (strike === null) {
-        this.formError.set('Pick a strike from the calls or puts list.');
-        return;
-      }
-      instrument.strike = Number(strike);
+    if (this.needsExpiry() && !this.expiry()) {
+      this.formError.set('Expiry is required for futures and options.');
+      return;
     }
-    if (this.needsExpiry()) {
-      if (!this.expiry()) {
-        this.formError.set('Expiry is required for FUTURE / CE / PE.');
-        return;
-      }
-      instrument.expiry = this.expiry();
+    // TEST without a date is a 400 from the backend, not an ignored field.
+    if (this.mode() === 'TEST' && !this.date()) {
+      this.formError.set('Pick the session date to replay.');
+      return;
     }
 
+    const panels = this.isOption()
+      ? this.selectedLegs().map((leg) =>
+          this.panelFor(
+            { type: leg.leg, underlying, strike: leg.strike, expiry: this.expiry() },
+            leg.label,
+            leg.leg,
+          ),
+        )
+      : [
+          this.panelFor(
+            {
+              type: this.kind() as InstrumentType,
+              underlying,
+              ...(this.needsExpiry() ? { expiry: this.expiry() } : {}),
+            },
+            underlying,
+            null,
+          ),
+        ];
+
+    if (!panels.length) {
+      this.formError.set('Pick a call, a put, or both.');
+      return;
+    }
+
+    this.panels.set(panels);
+  }
+
+  private panelFor(
+    instrument: InstrumentRequest,
+    label: string,
+    leg: 'CE' | 'PE' | null,
+  ): ChartPanel {
     const live = this.mode() === 'LIVE';
-    // `date` and `replaySpeed` are TEST-only: sending either with LIVE is a
-    // 400, not an ignored field. LIVE also accepts `1minute` only.
-    // `historyDays` is the exception — prior sessions are just as useful behind
-    // a live chart — so it goes on both, and only when non-zero.
     const history = Number(this.historyDays());
+    // `date` and `replaySpeed` are TEST-only: sending either with LIVE is a
+    // 400, not an ignored field. `historyDays` is the exception — prior
+    // sessions are just as useful behind a live chart — so it goes on both,
+    // and only when non-zero.
+    //
+    // `interval` is always `1minute`: it is the only bar the live builder
+    // produces, it is the finest a replay can source, and the chart resamples
+    // it on screen. Asking the backend for coarser bars would fix the
+    // timeframe for the life of the session and buy nothing.
     const request: StartStreamRequest = live
       ? {
           mode: 'LIVE',
@@ -584,12 +832,19 @@ export class ChartStreamPageComponent {
       : {
           mode: 'TEST',
           instrument,
-          interval: this.interval(),
-          ...(this.date() ? { date: this.date() } : {}),
+          interval: '1minute',
+          date: this.date(),
           replaySpeed: Number(this.replaySpeed()),
           ...(history > 0 ? { historyDays: history } : {}),
         };
 
-    this.chart().start(request);
+    return {
+      key: `${instrument.type}:${instrument.underlying}:${instrument.expiry ?? ''}:${
+        instrument.strike ?? ''
+      }`,
+      label,
+      leg,
+      request,
+    };
   }
 }

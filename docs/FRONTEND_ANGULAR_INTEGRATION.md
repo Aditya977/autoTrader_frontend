@@ -34,9 +34,9 @@ POST /streamer/stream/start   ──►  { sessionId, status: 'RUNNING', ... }
         ▼
 WS   /streamer/stream/{sessionId}/ws
         │
-        ├──►  SESSION_STATUS   (once, on connect — current state)
+        ├──►  SESSION_STATUS   (once, on connect — current state, NOT an ending)
         ├──►  CANDLE × N       (the whole series so far, then live as produced)
-        └──►  SESSION_COMPLETED | SESSION_STOPPED | SESSION_ERROR
+        └──►  SESSION_COMPLETED | SESSION_STOPPED | SESSION_ERROR   (always last)
         │
         ▼
 POST /streamer/stream/{sessionId}/stop   (optional for TEST — it ends itself)
@@ -48,6 +48,17 @@ required to connect "in time". Connect whenever, reconnect whenever — you
 always get the complete series. The cost is that a reconnect re-sends bars
 you already have, which is why [§5](#5-chart-wiring) insists you key bars by
 time rather than appending them.
+
+The second most important property, and the one that is easy to get wrong:
+**`SESSION_STATUS` is a status update, not an ending.** With
+`replaySpeed: 0` the session finishes in milliseconds — long before the
+browser has opened the socket — so that very first frame already reads
+`status: 'COMPLETED'`. Ending the stream on it closes the socket ahead of
+the backlog and throws the whole day away, which presents as a chart that
+draws nothing at all. Complete only on an explicit `SESSION_COMPLETED` /
+`SESSION_STOPPED` / `SESSION_ERROR`; the backend sends one of those *after*
+the backlog for a session that had already finished, so waiting for it is
+always safe.
 
 `LIVE` and `TEST` emit the identical `CANDLE` shape. One chart component
 serves both; nothing downstream of the socket needs to know the mode.
@@ -292,10 +303,7 @@ client library is involved.
 import { Injectable, NgZone, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
-import {
-  TERMINAL_STATUSES,
-  type ChartStreamEvent,
-} from './chart-stream.models';
+import type { ChartStreamEvent } from './chart-stream.models';
 
 @Injectable({ providedIn: 'root' })
 export class ChartStreamSocketService {
@@ -304,10 +312,15 @@ export class ChartStreamSocketService {
   /**
    * Events for one session, with automatic reconnect.
    *
-   * Completes on a terminal event (COMPLETED / STOPPED / ERROR) and on
-   * unsubscribe. Reconnects on an unexpected drop — the backend re-sends the
-   * full candle backlog each time, so no bar is lost, but see §5: the
-   * consumer must key bars by time rather than appending them.
+   * Completes on an explicit lifecycle event — SESSION_COMPLETED,
+   * SESSION_STOPPED, SESSION_ERROR — and on unsubscribe. **Never on
+   * SESSION_STATUS, however terminal its status reads**: that frame arrives
+   * ahead of the candle backlog, so ending the stream on it discards every
+   * bar behind it (see §1).
+   *
+   * Reconnects on an unexpected drop — the backend re-sends the full candle
+   * backlog each time, so no bar is lost, but see §5: the consumer must key
+   * bars by time rather than appending them.
    */
   connect(sessionId: string): Observable<ChartStreamEvent> {
     return new Observable<ChartStreamEvent>((subscriber) => {
@@ -341,9 +354,7 @@ export class ChartStreamSocketService {
           const done =
             event.type === 'SESSION_COMPLETED' ||
             event.type === 'SESSION_STOPPED' ||
-            event.type === 'SESSION_ERROR' ||
-            (event.type === 'SESSION_STATUS' &&
-              TERMINAL_STATUSES.includes(event.status));
+            event.type === 'SESSION_ERROR';
 
           if (done) {
             closedByUs = true;
@@ -632,14 +643,21 @@ this.start({
 
 ---
 
-## 7. Auth (Live mode only)
+## 7. Auth (every endpoint)
 
-**Test Mode needs no login at all** — the historical endpoint the backend
-reads is public, including for option contracts. Build and ship the entire
-historical-charting feature before anyone obtains Upstox credentials.
+**Every endpoint in this document except `/streamer/auth/*` requires a
+logged-in Upstox session — `TEST` mode included.** Instrument lists, option
+chains, historical bars and the live feed are all read from Upstox with the
+signed-in user's own credentials; there is no anonymous mode and no
+public-data fallback. An earlier backend did serve historical data publicly,
+which is why older notes here said Test Mode needed no login;
+`UpstoxSessionGuard` closed that in `debb67e`.
 
-Only `mode: 'LIVE'` requires OAuth. A `LIVE` start without a session returns
-`401` with code `AuthError`.
+A request without a session returns `401` with code `AuthError`. Treat a `401`
+from _any_ endpoint as "the session is gone" and restart the login — it also
+fires mid-session when Upstox expires the token (daily at 03:30 IST) or it is
+revoked elsewhere. An interceptor is the right place for this: a session can
+end long after a route guard has passed.
 
 `GET /streamer/auth/login` is a **browser navigation**, not an XHR — it
 `302`s to Upstox. Two workable shapes:
@@ -679,6 +697,7 @@ The frontend never sees, stores or forwards an access token.
 | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **`timestamp` is milliseconds**                         | Lightweight Charts wants seconds. Divide by 1000. Your chart will look empty, not broken.                                                                                            |
 | **Bars repeat on reconnect**                            | The full backlog re-sends. Key by time and `setData`; never blind-`update()`, which throws on a backwards time.                                                                      |
+| **A terminal `SESSION_STATUS` is not end-of-stream**    | It arrives *before* the backlog. Completing on it discards every bar behind it — the classic `replaySpeed: 0` empty chart. Wait for the lifecycle event. |
 | **`SESSION_STARTED` may already have fired**            | It is not replayed. Drive your UI from `SESSION_STATUS` (sent on every connect) and the REST snapshot.                                                                               |
 | **Index volume is always 0**                            | An index carries no traded volume on the wire. A volume histogram is meaningful for options and futures, flat for `INDEX`.                                                           |
 | **`openInterest` is `null` for an index**               | Null means "this instrument has none", not "missing". Do not render it as 0.                                                                                                         |

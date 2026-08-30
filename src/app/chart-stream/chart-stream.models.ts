@@ -158,4 +158,15 @@ export interface ApiErrorBody {
   };
 }
 
+/**
+ * The statuses a session never moves out of.
+ *
+ * For **rendering** — dimming a finished panel, disabling Stop. Explicitly
+ * **not** for deciding that a WebSocket stream has ended: `SESSION_STATUS`
+ * arrives ahead of the candle backlog and already reads `COMPLETED` for an
+ * instant replay, so closing the socket on it discards the entire day. That
+ * bug is what this note exists to stop happening twice; see
+ * `ChartStreamSocketService.connect`, which ends only on an explicit lifecycle
+ * event.
+ */
 export const TERMINAL_STATUSES: readonly ChartSessionStatus[] = ['COMPLETED', 'STOPPED', 'ERROR'];

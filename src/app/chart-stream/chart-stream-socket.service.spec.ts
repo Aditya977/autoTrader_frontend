@@ -115,15 +115,26 @@ describe('ChartStreamSocketService', () => {
     expect(socket.closes[0].code).toBe(1000);
   });
 
-  it('completes when SESSION_STATUS reports an already-terminal session', () => {
+  it('does NOT complete on a terminal SESSION_STATUS, and still delivers the backlog behind it', () => {
+    // Regression, and the whole reason "instant" replay drew an empty chart.
+    // The backend sends SESSION_STATUS first and the candle backlog behind it,
+    // so for a replaySpeed:0 session — finished long before the browser opens
+    // the socket — that opening frame already reads COMPLETED. Ending the
+    // stream on it discarded every bar that followed. Only the explicit
+    // lifecycle event, which the backend sends *after* the backlog, ends it.
+    const seen: ChartStreamEvent[] = [];
     let completed = false;
-    service.connect('abc').subscribe({ complete: () => (completed = true) });
+    service.connect('abc').subscribe({
+      next: (e) => seen.push(e),
+      complete: () => (completed = true),
+    });
 
-    MockWebSocket.instances[0].emit({
+    const socket = MockWebSocket.instances[0];
+    socket.emit({
       type: 'SESSION_STATUS',
       sessionId: 'abc',
       mode: 'TEST',
-      status: 'STOPPED',
+      status: 'COMPLETED',
       instrumentKey: 'k',
       interval: '1minute',
       date: null,
@@ -131,7 +142,15 @@ describe('ChartStreamSocketService', () => {
       error: null,
     });
 
+    expect(completed).toBeFalse();
+
+    socket.emit(candle(1_755_000_000_000));
+    socket.emit(candle(1_755_000_060_000));
+    expect(seen.filter((e) => e.type === 'CANDLE').length).toBe(2);
+
+    socket.emit({ type: 'SESSION_COMPLETED', sessionId: 'abc', timestamp: 1 });
     expect(completed).toBeTrue();
+    expect(socket.closes[0].code).toBe(1000);
   });
 
   it('does not complete on a non-terminal SESSION_STATUS', () => {

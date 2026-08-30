@@ -1,7 +1,7 @@
 import { Injectable, NgZone, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
-import { TERMINAL_STATUSES, type ChartStreamEvent } from './chart-stream.models';
+import type { ChartStreamEvent } from './chart-stream.models';
 
 @Injectable({ providedIn: 'root' })
 export class ChartStreamSocketService {
@@ -10,10 +10,23 @@ export class ChartStreamSocketService {
   /**
    * Events for one session, with automatic reconnect.
    *
-   * Completes on a terminal event (COMPLETED / STOPPED / ERROR) and on
-   * unsubscribe. Reconnects on an unexpected drop — the backend re-sends the
-   * full candle backlog each time, so no bar is lost, but the consumer must
-   * key bars by time rather than appending them (see CandleSeriesBuffer).
+   * Completes on an explicit lifecycle event — `SESSION_COMPLETED`,
+   * `SESSION_STOPPED`, `SESSION_ERROR` — and on unsubscribe.
+   *
+   * **Never on `SESSION_STATUS`, however terminal that status reads.** That
+   * frame is the session's state as of the moment the socket opened, and the
+   * backend sends it *first*, ahead of the candle backlog. Ending the stream
+   * on it meant an instant replay (`replaySpeed: 0`) — which finishes long
+   * before the browser has opened the socket, and so opens with a status of
+   * COMPLETED — was closed on its very first frame, discarding every bar
+   * behind it. The chart drew nothing at all, which reads as a backend that
+   * sent no data rather than a client that threw it away. The backend now
+   * sends the matching lifecycle event *after* the backlog, so waiting for it
+   * is both correct and sufficient.
+   *
+   * Reconnects on an unexpected drop — the backend re-sends the full candle
+   * backlog each time, so no bar is lost, but the consumer must key bars by
+   * time rather than appending them (see CandleSeriesBuffer).
    *
    * Closing the socket does NOT stop the session; call `api.stop(sessionId)`
    * when you actually mean it.
@@ -49,8 +62,7 @@ export class ChartStreamSocketService {
           const done =
             event.type === 'SESSION_COMPLETED' ||
             event.type === 'SESSION_STOPPED' ||
-            event.type === 'SESSION_ERROR' ||
-            (event.type === 'SESSION_STATUS' && TERMINAL_STATUSES.includes(event.status));
+            event.type === 'SESSION_ERROR';
 
           if (done) {
             closedByUs = true;
