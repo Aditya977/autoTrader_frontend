@@ -6,13 +6,15 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
 import { UpstoxAuthService } from '../auth/upstox-auth.service';
-import { DISPLAY_INTERVALS } from './chart-time';
+import { DISPLAY_INTERVALS, intervalNameFor } from './chart-time';
 import type {
   ChartSessionMode,
   InstrumentRequest,
   InstrumentType,
+  LevelMethod,
   PricedOptionContract,
   StartStreamRequest,
+  StreamLevelsOptions,
 } from './chart-stream.models';
 
 /**
@@ -59,6 +61,53 @@ const HISTORY_CHOICES: { value: number; label: string }[] = [
   { value: 2, label: '+ previous 2 days' },
   { value: 5, label: '+ previous 5 days' },
   { value: 10, label: '+ previous 10 days' },
+];
+
+/**
+ * How support and resistance should be found, as the three answers that
+ * actually differ rather than as five numeric knobs.
+ *
+ * `off` is a real option and the default: annotations are a choice, and a
+ * chart nobody asked to annotate should not pay for the extra history fetch
+ * that finding levels costs.
+ */
+type LevelChoice = 'off' | LevelMethod;
+
+const LEVEL_CHOICES: { value: LevelChoice; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'swing', label: 'Swing levels' },
+  { value: 'pivot', label: 'Pivot points' },
+  { value: 'both', label: 'Swings + pivots' },
+];
+
+/**
+ * How hard to look for swing levels, as the trade-off it really is.
+ *
+ * One control instead of four: `swingLookback` decides how big a turn has to
+ * be, `minTouches` how often it must have been tested, and moving them
+ * independently mostly produces combinations nobody wants. These three are the
+ * useful diagonal through that space.
+ */
+const LEVEL_SENSITIVITIES: {
+  value: string;
+  label: string;
+  tuning: { swingLookback: number; minTouches: number; maxLevels: number; tolerancePct: number };
+}[] = [
+  {
+    value: 'major',
+    label: 'Major only',
+    tuning: { swingLookback: 6, minTouches: 2, maxLevels: 4, tolerancePct: 0.35 },
+  },
+  {
+    value: 'balanced',
+    label: 'Balanced',
+    tuning: { swingLookback: 3, minTouches: 2, maxLevels: 6, tolerancePct: 0.25 },
+  },
+  {
+    value: 'detailed',
+    label: 'Detailed',
+    tuning: { swingLookback: 2, minTouches: 1, maxLevels: 10, tolerancePct: 0.15 },
+  },
 ];
 
 /**
@@ -220,6 +269,26 @@ interface ChartPanel {
               }
             </select>
           </label>
+
+          <label>
+            <span>Support / resistance</span>
+            <select [(ngModel)]="levelChoice" name="levels">
+              @for (l of levelChoices; track l.value) {
+                <option [ngValue]="l.value">{{ l.label }}</option>
+              }
+            </select>
+          </label>
+
+          @if (levelChoice() !== 'off') {
+            <label>
+              <span>S/R detail</span>
+              <select [(ngModel)]="levelSensitivity" name="levelSensitivity">
+                @for (s of levelSensitivities; track s.value) {
+                  <option [ngValue]="s.value">{{ s.label }}</option>
+                }
+              </select>
+            </label>
+          }
         </div>
 
         <div class="actions">
@@ -517,6 +586,8 @@ export class ChartStreamPageComponent {
   protected readonly speeds = REPLAY_SPEEDS;
   protected readonly historyChoices = HISTORY_CHOICES;
   protected readonly displayIntervals = DISPLAY_INTERVALS;
+  protected readonly levelChoices = LEVEL_CHOICES;
+  protected readonly levelSensitivities = LEVEL_SENSITIVITIES;
 
   protected readonly mode = signal<ChartSessionMode>('TEST');
   protected readonly kind = signal<InstrumentKind>('OPTIONS');
@@ -528,6 +599,17 @@ export class ChartStreamPageComponent {
   protected readonly date = signal(lastWeekdayKey(new Date()));
   protected readonly replaySpeed = signal(0);
   protected readonly historyDays = signal(0);
+  /**
+   * Whether — and how — to plot support and resistance with the chart.
+   *
+   * A *request* field rather than a display toggle, unlike the bar interval:
+   * finding levels needs bars the chart itself may not have (a LIVE session
+   * opened at 09:20 has five), so the backend fetches prior sessions for the
+   * analysis. Each panel's own S/R button still turns the drawn lines on and
+   * off afterwards without restarting anything.
+   */
+  protected readonly levelChoice = signal<LevelChoice>('off');
+  protected readonly levelSensitivity = signal('balanced');
   /**
    * Bar width on screen, in seconds.
    *
@@ -570,9 +652,25 @@ export class ChartStreamPageComponent {
         ? 'Select a call and/or a put to chart.'
         : `Charts ${this.underlying() || 'the underlying'}.`;
     }
-    return legs.length === 1
-      ? `Charts ${legs[0].label}.`
-      : `Charts ${legs[0].label} and ${legs[1].label} side by side.`;
+    const what =
+      legs.length === 1
+        ? `Charts ${legs[0].label}.`
+        : `Charts ${legs[0].label} and ${legs[1].label} side by side.`;
+    return `${what}${this.levelPlan()}`;
+  });
+
+  /** The S/R half of the plan line — empty when levels are off. */
+  private readonly levelPlan = computed(() => {
+    switch (this.levelChoice()) {
+      case 'swing':
+        return ' Plots swing support & resistance.';
+      case 'pivot':
+        return ' Plots the previous session’s pivot points.';
+      case 'both':
+        return ' Plots swing levels and pivot points.';
+      default:
+        return '';
+    }
   });
 
   /**
@@ -806,6 +904,29 @@ export class ChartStreamPageComponent {
     this.panels.set(panels);
   }
 
+  /**
+   * The `levels` block for a start request, or `null` for an un-annotated chart.
+   *
+   * `interval` is the one field the chart cannot leave to the backend default:
+   * the wire is always `1minute` and the chart resamples on screen, so without
+   * naming the *displayed* interval here the backend would find levels in
+   * one-minute wiggles and the browser would draw them over 15-minute bars.
+   */
+  private levelOptions(): StreamLevelsOptions | null {
+    const choice = this.levelChoice();
+    if (choice === 'off') return null;
+
+    const sensitivity =
+      LEVEL_SENSITIVITIES.find((s) => s.value === this.levelSensitivity()) ??
+      LEVEL_SENSITIVITIES[1]!;
+
+    return {
+      method: choice,
+      interval: intervalNameFor(this.displaySeconds()),
+      ...sensitivity.tuning,
+    };
+  }
+
   private panelFor(
     instrument: InstrumentRequest,
     label: string,
@@ -822,12 +943,18 @@ export class ChartStreamPageComponent {
     // produces, it is the finest a replay can source, and the chart resamples
     // it on screen. Asking the backend for coarser bars would fix the
     // timeframe for the life of the session and buy nothing.
+    //
+    // `levels` is the exception to the LIVE/TEST split below: both modes
+    // publish the same CANDLE events through the same aggregator, so both are
+    // annotated by the same code and a replay behaves exactly as live does.
+    const levels = this.levelOptions();
     const request: StartStreamRequest = live
       ? {
           mode: 'LIVE',
           instrument,
           interval: '1minute',
           ...(history > 0 ? { historyDays: history } : {}),
+          ...(levels ? { levels } : {}),
         }
       : {
           mode: 'TEST',
@@ -836,6 +963,7 @@ export class ChartStreamPageComponent {
           date: this.date(),
           replaySpeed: Number(this.replaySpeed()),
           ...(history > 0 ? { historyDays: history } : {}),
+          ...(levels ? { levels } : {}),
         };
 
     return {

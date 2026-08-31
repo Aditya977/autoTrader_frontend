@@ -19,7 +19,9 @@ import {
   LineStyle,
   createChart,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
+  type PriceLineOptions,
   TickMarkType,
   type MouseEventParams,
   type Time,
@@ -34,17 +36,23 @@ import {
   type Bar,
 } from './candle-series-buffer';
 import {
+  DISPLAY_INTERVALS,
   formatIstAxisStamp,
   formatIstDay,
   formatIstStamp,
   formatIstTime,
   formatPrice,
   formatVolume,
+  intervalNameFor,
 } from './chart-time';
 import {
   TERMINAL_STATUSES,
+  type ChartInterval,
+  type ChartLevels,
   type ChartSessionSnapshot,
+  type SessionLevelsQuery,
   type StartStreamRequest,
+  type SupportResistanceLevel,
 } from './chart-stream.models';
 
 /**
@@ -67,6 +75,53 @@ const THEME = {
   upFaded: 'rgba(38, 161, 123, 0.4)',
   downFaded: 'rgba(239, 83, 80, 0.4)',
 } as const;
+
+/**
+ * How a support/resistance level is drawn.
+ *
+ * Two visual languages, because the two kinds of level mean different things:
+ *
+ * - a **swing** level is a *price* — the number is what matters, so it gets the
+ *   price-scale tag, a dashed line, and a weight that follows how strongly the
+ *   backend rated it;
+ * - a **pivot** is a *name* — PP, R1, S2 are read as labels, not as prices, so
+ *   they get the in-chart title and a thin dotted line, and they deliberately
+ *   do not claim a slot on the price scale. With `both` selected that is the
+ *   difference between six axis tags and thirteen fighting for the same
+ *   vertical inch.
+ *
+ * Colour is the same green/red as the candles: a line under price is support,
+ * a line above it is resistance, and the chart says so the same way twice.
+ */
+function priceLineFor(level: SupportResistanceLevel): PriceLineOptions {
+  const pivot = level.source === 'PIVOT';
+  const base = level.kind === 'SUPPORT' ? THEME.up : THEME.down;
+
+  return {
+    price: level.price,
+    // Faded by strength, so a two-touch level does not shout as loudly as a
+    // five-touch one and the eye ranks them without reading a number.
+    color: fade(base, pivot ? 0.42 : 0.35 + 0.5 * level.strength),
+    lineWidth: !pivot && level.strength >= 0.6 ? 2 : 1,
+    lineStyle: pivot ? LineStyle.Dotted : LineStyle.Dashed,
+    lineVisible: true,
+    axisLabelVisible: !pivot,
+    axisLabelColor: fade(base, 0.85),
+    axisLabelTextColor: '#06121d',
+    title: pivot
+      ? level.label
+      : `${level.kind === 'SUPPORT' ? 'S' : 'R'}·${level.touches}`,
+  };
+}
+
+/** `#26a17b` + alpha → `rgba(…)`, so one palette entry can carry several weights. */
+function fade(hex: string, alpha: number): string {
+  const value = Number.parseInt(hex.slice(1), 16);
+  const r = (value >> 16) & 255;
+  const g = (value >> 8) & 255;
+  const b = value & 255;
+  return `rgba(${r}, ${g}, ${b}, ${Math.min(1, Math.max(0, alpha)).toFixed(2)})`;
+}
 
 /** What the pointer is currently over, or the last bar when it is elsewhere. */
 interface Readout {
@@ -102,7 +157,20 @@ interface Readout {
             <i class="dot"></i>{{ statusText() }}
           </span>
           <span class="bars">{{ barCount() }} bars</span>
-          <button type="button" class="ghost" (click)="stop()" [disabled]="!canStop()">Stop</button>
+          <button
+            type="button"
+            class="ghost sr"
+            [class.on]="showLevels()"
+            [disabled]="!session()"
+            [attr.aria-pressed]="showLevels()"
+            title="Support &amp; resistance"
+            (click)="toggleLevels()"
+          >
+            {{ levelsLoading() ? 'S/R…' : 'S/R' }}
+          </button>
+          <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
+            Stop
+          </button>
         </div>
       </header>
 
@@ -119,6 +187,34 @@ interface Readout {
             </span>
           }
         </div>
+      }
+
+      @if (levelBand(); as sr) {
+        <div class="levels">
+          <span class="tag">S/R</span>
+          @if (sr.above; as r) {
+            <span class="lvl up">
+              ▲ {{ formatLevel(r) }}
+              <i>{{ r.source === 'PIVOT' ? r.label : r.touches + '×' }}</i>
+            </span>
+          }
+          @if (sr.below; as s) {
+            <span class="lvl down">
+              ▼ {{ formatLevel(s) }}
+              <i>{{ s.source === 'PIVOT' ? s.label : s.touches + '×' }}</i>
+            </span>
+          }
+          <span class="meta">
+            {{ sr.count }} level{{ sr.count === 1 ? '' : 's' }} on {{ sr.interval }}
+            @if (sr.pivotDate) {
+              · pivots from {{ sr.pivotDate }}
+            }
+          </span>
+        </div>
+      }
+
+      @if (levelsError(); as message) {
+        <p class="error">{{ message }}</p>
       }
 
       @if (error(); as message) {
@@ -332,6 +428,58 @@ interface Readout {
       color: var(--down);
     }
 
+    /* The S/R toggle reads as pressed, because it is a mode the chart is in
+       rather than an action — the lines stay until it is pressed again. */
+    .sr.on {
+      border-color: rgba(90, 169, 230, 0.55);
+      background: rgba(90, 169, 230, 0.14);
+      color: var(--accent);
+    }
+
+    .levels {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 0.55rem;
+      padding: 0.35rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .levels .tag {
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--text-faint);
+    }
+
+    .levels .lvl {
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
+
+    .levels .lvl.up {
+      color: var(--down);
+    }
+
+    .levels .lvl.down {
+      color: var(--up);
+    }
+
+    /* The touch count rides along quietly: it qualifies the level, it is not
+       the level. */
+    .levels .lvl i {
+      margin-left: 0.15rem;
+      font-style: normal;
+      font-weight: 400;
+      opacity: 0.65;
+    }
+
+    .levels .meta {
+      color: var(--text-faint);
+    }
+
     .error {
       margin: 0;
       padding: 0.55rem 0.9rem;
@@ -442,6 +590,9 @@ export class ChartStreamComponent {
   private volume?: ISeriesApi<'Histogram'>;
   private readonly buffer = new CandleSeriesBuffer();
 
+  /** The price lines currently on the chart, so they can be removed as a set. */
+  private priceLines: IPriceLine[] = [];
+
   /** The bars currently drawn, so the crosshair can look one up by time. */
   private drawn: Bar[] = [];
   private drawnByTime = new Map<number, Bar>();
@@ -462,6 +613,21 @@ export class ChartStreamComponent {
   private readonly revision = signal(0);
   readonly hovered = signal<Bar | null>(null);
   readonly tooltipAt = signal<{ x: number; y: number } | null>(null);
+
+  /**
+   * The levels currently drawn, and the interval they were found on.
+   *
+   * The interval is kept beside them because it is what makes a set *stale*:
+   * switching the chart from 1m to 15m does not change these numbers, it
+   * changes whether they still describe the bars on screen.
+   */
+  readonly levels = signal<SupportResistanceLevel[]>([]);
+  private levelsInterval: ChartInterval | null = null;
+  private levelsPivotDate = signal<string | null>(null);
+  /** Off until the session asks for levels, or the user presses S/R. */
+  readonly showLevels = signal(false);
+  readonly levelsLoading = signal(false);
+  readonly levelsError = signal<string | null>(null);
 
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
@@ -535,6 +701,32 @@ export class ChartStreamComponent {
     return { ...at, readout };
   });
 
+  /**
+   * The one line of text the S/R bar shows: the level immediately above price
+   * and the one immediately below it.
+   *
+   * Not a list of all thirteen. Those are already *on the chart*, which is
+   * where a level belongs; what a header can add is the pair that matters
+   * right now — where this is going and where it stops.
+   *
+   * Both fall out of the ordering with no searching: the backend returns
+   * levels ascending by price and labels each one against the same reference
+   * close, so the first `RESISTANCE` is the nearest above and the last
+   * `SUPPORT` is the nearest below.
+   */
+  readonly levelBand = computed(() => {
+    const levels = this.levels();
+    if (!this.showLevels() || !levels.length) return null;
+    const supports = levels.filter((l) => l.kind === 'SUPPORT');
+    return {
+      count: levels.length,
+      above: levels.find((l) => l.kind === 'RESISTANCE') ?? null,
+      below: supports[supports.length - 1] ?? null,
+      interval: this.intervalLabel(),
+      pivotDate: this.levelsPivotDate(),
+    };
+  });
+
   constructor() {
     effect(() => {
       const host = this.chartHost().nativeElement;
@@ -565,6 +757,9 @@ export class ChartStreamComponent {
         scaleMargins: { top: 0.08, bottom: 0.24 },
       });
       this.chart.subscribeCrosshairMove(this.onCrosshair);
+      // Levels can arrive before the canvas exists — a session started with
+      // `levels` publishes its first set within milliseconds of Start.
+      this.drawLevels();
     });
 
     // Starting is driven by the input rather than by a method the parent
@@ -581,7 +776,13 @@ export class ChartStreamComponent {
     // switching from 1m to 5m mid-replay costs nothing and loses nothing.
     effect(() => {
       this.displaySeconds();
-      untracked(() => this.redraw({ refit: true }));
+      untracked(() => {
+        this.redraw({ refit: true });
+        // The bars are free to re-bucket; the levels are not. They were found
+        // on a stated interval server-side, so the set on screen now describes
+        // a series that is no longer drawn — re-ask for the new one.
+        if (this.showLevels()) this.refreshLevels();
+      });
     });
 
     this.destroyRef.onDestroy(() => {
@@ -600,6 +801,13 @@ export class ChartStreamComponent {
     this.barCount.set(0);
     this.hovered.set(null);
     this.tooltipAt.set(null);
+    // Levels belong to the series that produced them: carrying the last
+    // session's lines onto a different instrument would draw confident,
+    // completely wrong numbers.
+    this.clearLevels();
+    // The request is what says whether this chart is annotated. Pressing S/R
+    // afterwards still works either way — this only decides where it starts.
+    this.showLevels.set(request.levels !== undefined);
     this.redraw();
 
     this.api
@@ -640,6 +848,13 @@ export class ChartStreamComponent {
             // visible result.
             this.scheduleRedraw();
             break;
+          case 'LEVELS':
+            // Only a set found on the interval this chart is drawing. One
+            // computed on another describes turns that are not on screen, and
+            // the backend keeps publishing at the interval the session was
+            // started with even after the user switches timeframe.
+            if (event.interval === this.intervalName()) this.applyLevels(event);
+            break;
           case 'SESSION_STATUS':
             this.session.set(event);
             break;
@@ -657,6 +872,132 @@ export class ChartStreamComponent {
             break;
         }
       });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Support & resistance
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Shows or hides the levels.
+   *
+   * Turning them *on* fetches when what is held is stale or absent, and simply
+   * redraws when it is not — so pressing S/R twice does not cost two requests.
+   * Turning them off keeps the last set: the next press is instant.
+   */
+  toggleLevels(): void {
+    const next = !this.showLevels();
+    this.showLevels.set(next);
+    if (!next) {
+      this.drawLevels();
+      return;
+    }
+    if (this.levelsInterval === this.intervalName()) this.drawLevels();
+    else this.refreshLevels();
+  }
+
+  /** Price, at the same precision the readout uses. */
+  protected formatLevel(level: SupportResistanceLevel): string {
+    return formatPrice(level.price);
+  }
+
+  /**
+   * Asks the session for levels on the interval currently displayed.
+   *
+   * The *session* endpoint rather than the standalone one, deliberately: it
+   * analyses the bars this session published — the series on screen — with
+   * prior sessions folded in behind them, so the lines cannot describe a
+   * different chart than the one they are drawn on.
+   */
+  private refreshLevels(): void {
+    const sessionId = this.session()?.sessionId;
+    if (!sessionId) return;
+
+    this.levelsError.set(null);
+    this.levelsLoading.set(true);
+    this.api
+      .sessionLevels(sessionId, {
+        ...this.levelTuning(),
+        interval: this.intervalName(),
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.levelsLoading.set(false);
+          this.applyLevels(result);
+        },
+        error: (e: ChartStreamError) => {
+          this.levelsLoading.set(false);
+          // Its own line, not `error`: no levels is a chart without
+          // annotations, and reporting it as a chart failure would be a lie
+          // about the bars, which are fine.
+          this.levelsError.set(`Support/resistance unavailable — ${describe(e)}`);
+        },
+      });
+  }
+
+  /**
+   * The tuning the session was started with, reused for an on-demand fetch.
+   *
+   * So that pressing S/R on a chart started with `method: 'both'` gets pivots
+   * too, rather than silently falling back to the defaults and showing the
+   * user a different set of lines than the ones they configured.
+   */
+  private levelTuning(): SessionLevelsQuery {
+    const configured = this.request()?.levels;
+    if (!configured) return {};
+    const { interval: _interval, refreshEveryBars: _refresh, ...tuning } = configured;
+    return tuning;
+  }
+
+  private applyLevels(result: ChartLevels): void {
+    this.levels.set(result.levels);
+    this.levelsInterval = result.interval;
+    this.levelsPivotDate.set(result.pivotBasis?.date ?? null);
+    this.levelsError.set(null);
+    this.drawLevels();
+  }
+
+  private clearLevels(): void {
+    this.levels.set([]);
+    this.levelsInterval = null;
+    this.levelsPivotDate.set(null);
+    this.levelsError.set(null);
+    this.drawLevels();
+  }
+
+  /**
+   * Puts the current set on the chart, replacing whatever was there.
+   *
+   * Torn down and rebuilt rather than diffed: a `LEVELS` message is a complete
+   * replacement (a level that stopped qualifying is simply absent from it), and
+   * at most a dozen price lines the rebuild is cheaper than the bookkeeping a
+   * diff would need to stay correct.
+   */
+  private drawLevels(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.priceLines) series.removePriceLine(line);
+    this.priceLines = [];
+    if (!this.showLevels()) return;
+
+    for (const level of this.levels()) {
+      this.priceLines.push(series.createPriceLine(priceLineFor(level)));
+    }
+  }
+
+  /** The backend's name for the bar size on screen. */
+  private intervalName(): ChartInterval {
+    return intervalNameFor(this.displaySeconds());
+  }
+
+  /** The short form the S/R bar shows — `5m`, `1D`. */
+  private intervalLabel(): string {
+    return (
+      DISPLAY_INTERVALS.find((i) => i.seconds === this.displaySeconds())?.label ??
+      `${this.displaySeconds()}s`
+    );
   }
 
   private redrawQueued = false;

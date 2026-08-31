@@ -360,5 +360,74 @@ describe('ChartStreamPageComponent', () => {
       expect(second).not.toBe(first);
       expect(second).toEqual(first);
     });
+
+    it('leaves levels off unless they were asked for', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+
+      state().start();
+
+      expect(requests()[0].levels).toBeUndefined();
+    });
+
+    it('asks for levels on the interval the chart is displaying', () => {
+      // The wire is always 1-minute and the chart resamples, so the *displayed*
+      // interval is the only one that says which bars the lines describe.
+      flushCascade();
+      state().callStrike.set(24500);
+      state().levelChoice.set('swing');
+      state().displaySeconds.set(900);
+
+      state().start();
+
+      expect(requests()[0].levels).toEqual({
+        method: 'swing',
+        interval: '15minute',
+        swingLookback: 3,
+        minTouches: 2,
+        maxLevels: 6,
+        tolerancePct: 0.25,
+      });
+    });
+
+    it('carries the chosen sensitivity into the request', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+      state().levelChoice.set('both');
+      state().levelSensitivity.set('major');
+
+      state().start();
+
+      expect(requests()[0].levels).toEqual(
+        jasmine.objectContaining({ method: 'both', swingLookback: 6, maxLevels: 4 }),
+      );
+    });
+
+    // The whole point of the feature working the same way twice: a replay that
+    // annotates differently from a live chart is a replay nobody can trust.
+    it('plots levels in LIVE mode exactly as it does in TEST', () => {
+      flushCascade();
+      state().mode.set('LIVE');
+      state().onModeChange();
+      http.expectOne((r) => r.url === `${base}/streamer/instruments/chain`).flush(CHAIN);
+
+      state().callStrike.set(24500);
+      state().levelChoice.set('swing');
+      state().start();
+
+      const live = requests()[0];
+      expect(live.mode).toBe('LIVE');
+      expect(live.levels).toEqual(jasmine.objectContaining({ method: 'swing' }));
+    });
+
+    it('says in the plan line that levels will be plotted', () => {
+      flushCascade();
+      state().callStrike.set(24500);
+
+      expect(state().plan()).not.toContain('support');
+
+      state().levelChoice.set('pivot');
+      expect(state().plan()).toContain('pivot points');
+    });
   });
 });

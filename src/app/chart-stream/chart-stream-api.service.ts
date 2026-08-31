@@ -5,10 +5,13 @@ import { catchError } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import type {
   ApiErrorBody,
+  ChartLevels,
   ChartSessionSnapshot,
   InstrumentRequest,
+  LevelsRequest,
   OptionChain,
   ResolvedInstrument,
+  SessionLevelsQuery,
   StartStreamRequest,
 } from './chart-stream.models';
 
@@ -89,6 +92,39 @@ export class ChartStreamApiService {
   status(sessionId: string): Observable<ChartSessionSnapshot> {
     return this.http
       .get<ChartSessionSnapshot>(`${this.base}/streamer/stream/${sessionId}`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Support and resistance for an instrument, in one call — no session needed.
+   *
+   * For annotating a chart that is not streaming, or for asking about an
+   * instrument before charting it at all.
+   */
+  levels(request: LevelsRequest): Observable<ChartLevels> {
+    return this.http
+      .post<ChartLevels>(`${this.base}/streamer/stream/levels`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The same, found in the bars **this session has published** — the series
+   * actually on screen — with prior sessions folded in behind them.
+   *
+   * Works on any session, including one started without `levels` and one that
+   * has already finished, so a user who decides mid-replay that they want the
+   * lines does not have to restart it.
+   */
+  sessionLevels(sessionId: string, query: SessionLevelsQuery = {}): Observable<ChartLevels> {
+    // Only the fields actually set: every one has a backend default, and an
+    // `undefined` serialised as the string "undefined" is a 400.
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null) params[key] = String(value);
+    }
+
+    return this.http
+      .get<ChartLevels>(`${this.base}/streamer/stream/${sessionId}/levels`, { params })
       .pipe(catchError(this.unwrap));
   }
 

@@ -10,6 +10,7 @@ import type {
   ChartSessionSnapshot,
   ChartStreamEvent,
   StartStreamRequest,
+  SupportResistanceLevel,
 } from './chart-stream.models';
 
 @Component({
@@ -96,8 +97,11 @@ describe('ChartStreamComponent', () => {
   }
 
   const text = (): string => fixture.nativeElement.textContent as string;
+  // Named, not positional: the header holds two buttons now (Stop and the S/R
+  // toggle), and `.state button` would silently start meaning whichever
+  // happens to be first in the template.
   const stopButton = (): HTMLButtonElement =>
-    fixture.nativeElement.querySelector('.state button') as HTMLButtonElement;
+    fixture.nativeElement.querySelector('.state button.stop') as HTMLButtonElement;
 
   beforeEach(async () => {
     events = new Subject<ChartStreamEvent>();
@@ -276,5 +280,266 @@ describe('ChartStreamComponent', () => {
     const req = http.expectOne(`${environment.apiBase}/streamer/stream/sess-1/stop`);
     expect(req.request.method).toBe('POST');
     req.flush({ ...SNAPSHOT, status: 'STOPPED' });
+  });
+});
+
+describe('ChartStreamComponent — support & resistance', () => {
+  let fixture: ComponentFixture<HostComponent>;
+  let host: HostComponent;
+  let http: HttpTestingController;
+  let events: Subject<ChartStreamEvent>;
+
+  /** A request that asks the backend to plot levels along with the chart. */
+  const REQUEST_WITH_LEVELS: StartStreamRequest = {
+    ...REQUEST,
+    levels: { method: 'swing', interval: '1minute', maxLevels: 6, minTouches: 2 },
+  };
+
+  const LEVELS: SupportResistanceLevel[] = [
+    {
+      price: 98,
+      kind: 'SUPPORT',
+      source: 'SWING',
+      label: '',
+      touches: 3,
+      strength: 0.72,
+      bandLow: 97.9,
+      bandHigh: 98.1,
+      firstTouchMs: OPEN_MS,
+      lastTouchMs: OPEN_MS + 10 * MINUTE,
+    },
+    {
+      price: 104,
+      kind: 'RESISTANCE',
+      source: 'SWING',
+      label: '',
+      touches: 2,
+      strength: 0.5,
+      bandLow: 103.9,
+      bandHigh: 104.1,
+      firstTouchMs: OPEN_MS,
+      lastTouchMs: OPEN_MS + 8 * MINUTE,
+    },
+  ];
+
+  const levelsEvent = (interval = '1minute'): ChartStreamEvent => ({
+    type: 'LEVELS',
+    sessionId: 'sess-1',
+    timestamp: OPEN_MS,
+    instrumentKey: 'NSE_FO|54321',
+    tradingsymbol: 'NIFTY24AUG24350CE',
+    interval: interval as StartStreamRequest['interval'],
+    referencePrice: 101,
+    barsAnalysed: 500,
+    from: '2026-08-13T03:45:00.000Z',
+    to: '2026-08-14T09:59:00.000Z',
+    levels: LEVELS,
+    pivotBasis: null,
+  });
+
+  async function settle(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  function startSession(request: StartStreamRequest): void {
+    host.request.set(request);
+    fixture.detectChanges();
+    http.expectOne(`${environment.apiBase}/streamer/stream/start`).flush(SNAPSHOT);
+    fixture.detectChanges();
+  }
+
+  const text = (): string => fixture.nativeElement.textContent as string;
+  const levelsButton = (): HTMLButtonElement =>
+    fixture.nativeElement.querySelector('.state button.sr') as HTMLButtonElement;
+  const levelsBar = (): HTMLElement | null =>
+    fixture.nativeElement.querySelector('.levels') as HTMLElement | null;
+
+  beforeEach(async () => {
+    events = new Subject<ChartStreamEvent>();
+
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ChartStreamSocketService, useValue: { connect: () => events.asObservable() } },
+      ],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(HostComponent);
+    host = fixture.componentInstance;
+    http = TestBed.inject(HttpTestingController);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    http.verify();
+    fixture.destroy();
+  });
+
+  it('draws the levels a session pushes, with no request of its own', async () => {
+    startSession(REQUEST_WITH_LEVELS);
+    events.next(levelsEvent());
+    await settle();
+
+    // Nearest resistance above and nearest support below — the pair that
+    // matters right now, not a list of everything already on the chart.
+    expect(levelsBar()).toBeTruthy();
+    expect(text()).toContain('104.00');
+    expect(text()).toContain('98.00');
+    expect(text()).toContain('2 levels on 1m');
+  });
+
+  it('ignores a set found on an interval the chart is not drawing', async () => {
+    // The backend keeps publishing at the interval the session was started
+    // with; drawn over 15-minute bars, one-minute levels describe turns that
+    // are not on screen.
+    startSession(REQUEST_WITH_LEVELS);
+    events.next(levelsEvent('15minute'));
+    await settle();
+
+    expect(levelsBar()).toBeNull();
+  });
+
+  it('leaves a chart that did not ask for levels un-annotated', async () => {
+    startSession(REQUEST);
+    events.next(candle(OPEN_MS, 100));
+    await settle();
+
+    expect(levelsBar()).toBeNull();
+  });
+
+  it('fetches this session own levels when S/R is pressed', async () => {
+    startSession(REQUEST);
+
+    levelsButton().click();
+    fixture.detectChanges();
+
+    // The session endpoint, not the standalone one: the lines have to describe
+    // the series this chart is drawing.
+    const request = http.expectOne(
+      (r) => r.url === `${environment.apiBase}/streamer/stream/sess-1/levels`,
+    );
+    expect(request.request.method).toBe('GET');
+    expect(request.request.params.get('interval')).toBe('1minute');
+    request.flush({
+      instrumentKey: 'NSE_FO|54321',
+      tradingsymbol: 'NIFTY24AUG24350CE',
+      interval: '1minute',
+      referencePrice: 101,
+      barsAnalysed: 500,
+      from: null,
+      to: null,
+      levels: LEVELS,
+      pivotBasis: null,
+    });
+    await settle();
+
+    expect(text()).toContain('2 levels on 1m');
+  });
+
+  it('reuses the tuning the session was started with for an on-demand fetch', async () => {
+    // Otherwise a chart configured for pivots would quietly fall back to the
+    // defaults the moment it had to re-ask, and show a different set of lines
+    // than the one that was asked for.
+    startSession({
+      ...REQUEST,
+      levels: { method: 'both', maxLevels: 4, swingLookback: 6, refreshEveryBars: 20 },
+    });
+    // A session started with `levels` is pushed them over the socket, so
+    // nothing is fetched until the chart needs a set it does not hold — here,
+    // because the displayed interval changed.
+    host.displaySeconds.set(300);
+    fixture.detectChanges();
+
+    const request = http.expectOne(
+      (r) => r.url === `${environment.apiBase}/streamer/stream/sess-1/levels`,
+    );
+    expect(request.request.params.get('method')).toBe('both');
+    expect(request.request.params.get('maxLevels')).toBe('4');
+    expect(request.request.params.get('swingLookback')).toBe('6');
+    // Session-only fields never belong on this query.
+    expect(request.request.params.has('refreshEveryBars')).toBeFalse();
+    // …and `interval` is the displayed one, not the one the session was
+    // started with.
+    expect(request.request.params.get('interval')).toBe('5minute');
+    request.flush({
+      instrumentKey: 'NSE_FO|54321',
+      tradingsymbol: 'NIFTY24AUG24350CE',
+      interval: '5minute',
+      referencePrice: 101,
+      barsAnalysed: 10,
+      from: null,
+      to: null,
+      levels: [],
+      pivotBasis: null,
+    });
+    await settle();
+  });
+
+  it('hides the lines again without another request, then restores them', async () => {
+    startSession(REQUEST_WITH_LEVELS);
+    events.next(levelsEvent());
+    await settle();
+    expect(levelsBar()).toBeTruthy();
+
+    levelsButton().click();
+    await settle();
+    expect(levelsBar()).toBeNull();
+
+    // Back on: the held set is still current for this interval, so nothing is
+    // fetched — `http.verify()` in afterEach is what proves it.
+    levelsButton().click();
+    await settle();
+    expect(levelsBar()).toBeTruthy();
+  });
+
+  it('re-asks for levels when the display interval changes', async () => {
+    startSession(REQUEST_WITH_LEVELS);
+    events.next(levelsEvent());
+    await settle();
+
+    host.displaySeconds.set(300);
+    fixture.detectChanges();
+
+    const request = http.expectOne(
+      (r) => r.url === `${environment.apiBase}/streamer/stream/sess-1/levels`,
+    );
+    expect(request.request.params.get('interval')).toBe('5minute');
+    request.flush({
+      instrumentKey: 'NSE_FO|54321',
+      tradingsymbol: 'NIFTY24AUG24350CE',
+      interval: '5minute',
+      referencePrice: 101,
+      barsAnalysed: 100,
+      from: null,
+      to: null,
+      levels: LEVELS,
+      pivotBasis: { date: '2026-08-13', high: 110, low: 90, close: 100 },
+    });
+    await settle();
+
+    expect(text()).toContain('2 levels on 5m');
+    expect(text()).toContain('pivots from 2026-08-13');
+  });
+
+  it('reports a levels failure without claiming the chart itself failed', async () => {
+    startSession(REQUEST);
+
+    levelsButton().click();
+    fixture.detectChanges();
+
+    http
+      .expectOne((r) => r.url === `${environment.apiBase}/streamer/stream/sess-1/levels`)
+      .flush(
+        { error: { code: 'UPSTREAM_ERROR', message: 'historical data unavailable' } },
+        { status: 502, statusText: 'Bad Gateway' },
+      );
+    await settle();
+
+    expect(text()).toContain('Support/resistance unavailable');
+    // The bars are fine, so the session must not read as failed.
+    expect(text()).toContain('running');
   });
 });

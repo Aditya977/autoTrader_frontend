@@ -18,16 +18,16 @@ connection-refused on every call usually means this rather than a URL typo.
 
 ## Layout
 
-| Path                                                  | What it is                                                  |
-| ----------------------------------------------------- | ----------------------------------------------------------- |
-| `src/app/chart-stream/chart-stream.models.ts`         | Wire types, mirroring the backend contract exactly.         |
-| `src/app/chart-stream/chart-stream-api.service.ts`    | REST surface; unwraps the `{ error: {...} }` envelope once. |
-| `src/app/chart-stream/chart-stream-socket.service.ts` | The session WebSocket, with capped-backoff reconnect.       |
-| `src/app/auth/`                                       | Upstox OAuth: login page, route guards, `401` interceptor.  |
-| `src/app/chart-stream/chart-time.ts`                  | ms → s, IST labels, and the bucket anchor for resampling.   |
-| `src/app/chart-stream/candle-series-buffer.ts`        | The time-keyed bar buffer, and resampling to any timeframe. |
-| `src/app/chart-stream/chart-stream.component.ts`      | One chart panel; it starts itself from its `request` input. |
-| `src/app/chart-stream/chart-stream-page.component.ts` | The instrument form, and the panels it lays out.            |
+| Path                                                  | What it is                                                                             |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `src/app/chart-stream/chart-stream.models.ts`         | Wire types, mirroring the backend contract exactly.                                    |
+| `src/app/chart-stream/chart-stream-api.service.ts`    | REST surface; unwraps the `{ error: {...} }` envelope once.                            |
+| `src/app/chart-stream/chart-stream-socket.service.ts` | The session WebSocket, with capped-backoff reconnect.                                  |
+| `src/app/auth/`                                       | Upstox OAuth: login page, route guards, `401` interceptor.                             |
+| `src/app/chart-stream/chart-time.ts`                  | ms → s, IST labels, and the bucket anchor for resampling.                              |
+| `src/app/chart-stream/candle-series-buffer.ts`        | The time-keyed bar buffer, and resampling to any timeframe.                            |
+| `src/app/chart-stream/chart-stream.component.ts`      | One chart panel: starts itself from its `request` input, and owns the S/R price lines. |
+| `src/app/chart-stream/chart-stream-page.component.ts` | The instrument form, and the panels it lays out.                                       |
 
 ## Three details that fail silently
 
@@ -92,6 +92,38 @@ Buckets are anchored to the 09:15 IST open, not to the epoch, so a 5-minute
 chart runs 09:15 / 09:20 / 09:25 the way every other Indian chart does. Bars
 stay real UTC instants; only their labels are IST. Both rules live in
 `chart-time.ts`.
+
+## Support & resistance
+
+Levels are computed **server-side** and drawn as Lightweight Charts price
+lines. That split is deliberate: finding a level needs bars the chart itself
+may not have — a `LIVE` session opened at 09:20 has five — so the backend
+folds `contextDays` of prior sessions in behind whatever the session has
+published.
+
+Two ways they get onto a chart, and both work in `LIVE` and `TEST` alike:
+
+- **Up front** — the _Support / resistance_ picker on the form puts a `levels`
+  block on the start request, and the session pushes `LEVELS` frames on the
+  same socket the candles arrive on, refreshed as it streams.
+- **On demand** — the **S/R** button in any panel header fetches
+  `GET /streamer/stream/:id/levels`, which analyses the bars that session
+  actually published. It works on a session started without levels, and on one
+  that has already finished — a replay watched to the end is exactly when you
+  want to know where it kept turning.
+
+Two visual languages, because the two kinds of level mean different things: a
+**swing** level is a _price_, so it gets the price-scale tag, a dashed line and
+a weight that follows its strength; a **pivot** is a _name_ (`PP`, `R1`, `S2`),
+so it gets an in-chart title and a thin dotted line and deliberately does not
+claim a slot on the price scale. With _Swings + pivots_ selected that is the
+difference between six axis tags and thirteen fighting for the same inch.
+
+A `LEVELS` frame is a **complete replacement set, never a delta** — draw
+exactly what arrived. And because levels are found on a _stated_ interval
+server-side while the chart resamples locally, a set whose `interval` no longer
+matches what is drawn is ignored and re-requested; that is what the interval
+buttons trigger beyond re-bucketing.
 
 ## Two legs at once
 

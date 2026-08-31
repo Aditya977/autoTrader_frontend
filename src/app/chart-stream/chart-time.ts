@@ -1,4 +1,5 @@
 import type { UTCTimestamp } from 'lightweight-charts';
+import type { ChartInterval } from './chart-stream.models';
 
 /**
  * Everything that knows what time a bar is at, in one place.
@@ -36,16 +37,29 @@ const DAY_MS = 86_400_000;
  */
 const SESSION_OPEN_INTO_DAY_MS = (9 * 60 + 15) * 60_000;
 
-/** Display intervals the chart can resample the 1-minute wire series into. */
+/**
+ * Display intervals the chart can resample the 1-minute wire series into.
+ *
+ * Each carries the backend's own name for the same bar size, because support
+ * and resistance is computed *server-side, on a stated interval*: the chart
+ * resamples locally, so without a name to send, the backend would find levels
+ * in one-minute wiggles and the browser would draw them over 15-minute bars —
+ * lines describing turns that are not on screen.
+ */
 export const DISPLAY_INTERVALS = [
-  { seconds: 60, label: '1m' },
-  { seconds: 180, label: '3m' },
-  { seconds: 300, label: '5m' },
-  { seconds: 900, label: '15m' },
-  { seconds: 1800, label: '30m' },
-  { seconds: 3600, label: '1h' },
-  { seconds: 86_400, label: '1D' },
-] as const;
+  { seconds: 60, label: '1m', interval: '1minute' },
+  { seconds: 180, label: '3m', interval: '3minute' },
+  { seconds: 300, label: '5m', interval: '5minute' },
+  { seconds: 900, label: '15m', interval: '15minute' },
+  { seconds: 1800, label: '30m', interval: '30minute' },
+  { seconds: 3600, label: '1h', interval: '1hour' },
+  { seconds: 86_400, label: '1D', interval: '1day' },
+] as const satisfies readonly { seconds: number; label: string; interval: ChartInterval }[];
+
+/** The backend's name for a display interval; `1minute` for anything unlisted. */
+export function intervalNameFor(seconds: number): ChartInterval {
+  return DISPLAY_INTERVALS.find((i) => i.seconds === seconds)?.interval ?? '1minute';
+}
 
 /**
  * The start of the bucket `epochMs` falls in, for a bar of `seconds`.
