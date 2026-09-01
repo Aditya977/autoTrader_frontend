@@ -86,6 +86,15 @@ describe('ChartStreamPageComponent', () => {
   });
 
   afterEach(() => {
+    // The strategy catalogue is fetched on construction and is not what any test
+    // in this file asserts on — answering it here keeps `verify` about the
+    // requests that are. Emptied on purpose: with no strategy selected the page
+    // behaves exactly as it did before the picker existed, which is what the
+    // rest of this spec describes.
+    for (const request of http.match(`${base}/strategy/catalogue`)) {
+      request.flush({ strategies: [] });
+    }
+
     // A panel that rendered starts its own session. Answering those here keeps
     // `verify` about the requests this spec actually asserts on.
     for (const request of http.match(`${base}/streamer/stream/start`)) {
@@ -428,6 +437,219 @@ describe('ChartStreamPageComponent', () => {
 
       state().levelChoice.set('pivot');
       expect(state().plan()).toContain('pivot points');
+    });
+  });
+
+  describe('running strategies', () => {
+    const CATALOGUE = {
+      strategies: [
+        {
+          id: 'vwap-ema-trend',
+          name: 'VWAP + EMA trend',
+          description: 'buys strength',
+          timeframeMinutes: 5,
+          warmupBars: 26,
+          params: {},
+        },
+        {
+          id: 'vwap-reclaim',
+          name: 'VWAP reclaim',
+          description: 'buys the dip that holds',
+          timeframeMinutes: 5,
+          warmupBars: 26,
+          params: {},
+        },
+      ],
+    };
+
+    /** The catalogue request the page fires on construction. */
+    function flushCatalogue(): void {
+      http.expectOne(`${base}/strategy/catalogue`).flush(CATALOGUE);
+    }
+
+    function runSnapshot(sessionIds: string[]) {
+      return {
+        runId: 'run-1',
+        status: 'RUNNING',
+        startedAt: '2026-08-14T03:45:00.000Z',
+        sessionDate: '2026-08-14',
+        capital: 100000,
+        noEntryAfterMs: 0,
+        squareOffMs: 0,
+        costModel: { label: 'flat', includes: [], excludes: [] },
+        journalling: false,
+        strategies: CATALOGUE.strategies,
+        charts: sessionIds.map((sessionId, i) => ({
+          sessionId,
+          instrumentKey: `k${i}`,
+          tradingsymbol: `s${i}`,
+          label: `s${i}`,
+          leg: i === 0 ? 'CE' : 'PE',
+          lotSize: 65,
+          status: 'RUNNING',
+          barsConsumed: 0,
+        })),
+        books: [] as unknown[],
+        totals: {
+          capitalDeployed: 0,
+          realisedPnl: 0,
+          unrealisedPnl: 0,
+          totalPnl: 0,
+          totalPnlPct: 0,
+          costs: 0,
+          trades: 0,
+          openTrades: 0,
+          wins: 0,
+          losses: 0,
+          winRate: null,
+        },
+        error: null,
+      };
+    }
+
+    it('offers exactly the strategies the backend published, and none of its own', () => {
+      flushCascade();
+      flushCatalogue();
+
+      expect(
+        state()
+          .catalogue()
+          .map((s: { id: string }) => s.id),
+      ).toEqual(['vwap-ema-trend', 'vwap-reclaim']);
+    });
+
+    it('starts no simulation, and behaves exactly as before, with nothing selected', () => {
+      flushCascade();
+      flushCatalogue();
+      state().callStrike.set(24500);
+      state().start();
+
+      http.expectNone(`${base}/strategy/simulation/start`);
+      // The panel starts its own session, which is the pre-strategy behaviour.
+      expect(state().panels()[0].sessionId).toBeNull();
+      expect(state().run()).toBeNull();
+    });
+
+    it('sends the capital, the picked strategies and one chart per leg', () => {
+      flushCascade();
+      flushCatalogue();
+
+      state().callStrike.set(24500);
+      state().putStrike.set(24000);
+      state().toggleStrategy('vwap-ema-trend');
+      state().toggleStrategy('vwap-reclaim');
+      state().capital.set(250000);
+      state().journal.set(true);
+      state().start();
+
+      const req = http.expectOne(`${base}/strategy/simulation/start`);
+      expect(req.request.body.capital).toBe(250000);
+      expect(req.request.body.strategies).toEqual(['vwap-ema-trend', 'vwap-reclaim']);
+      expect(req.request.body.journal).toBe(true);
+      expect(req.request.body.charts.length).toBe(2);
+      expect(req.request.body.charts[0].instrument.type).toBe('CE');
+      expect(req.request.body.charts[1].instrument.type).toBe('PE');
+
+      req.flush(runSnapshot(['sess-ce', 'sess-pe']));
+    });
+
+    // This is what keeps the marks and the candles under them from being two
+    // different replays of the same instrument.
+    it('hands each panel the session the run already started, not a new one', () => {
+      flushCascade();
+      flushCatalogue();
+
+      state().callStrike.set(24500);
+      state().putStrike.set(24000);
+      state().toggleStrategy('vwap-ema-trend');
+      state().start();
+
+      http
+        .expectOne(`${base}/strategy/simulation/start`)
+        .flush(runSnapshot(['sess-ce', 'sess-pe']));
+
+      expect(
+        state()
+          .panels()
+          .map((p: { sessionId: string }) => p.sessionId),
+      ).toEqual(['sess-ce', 'sess-pe']);
+      // No panel started a session of its own.
+      http.expectNone(`${base}/streamer/stream/start`);
+    });
+
+    it('routes a book to the panel showing the session that produced it', () => {
+      flushCascade();
+      flushCatalogue();
+      state().callStrike.set(24500);
+      state().toggleStrategy('vwap-ema-trend');
+      state().start();
+
+      const snapshot = runSnapshot(['sess-ce']);
+      snapshot.books = [
+        { bookId: 'b1', sessionId: 'sess-ce', trades: [{ id: 1 }] },
+        { bookId: 'b2', sessionId: 'sess-other', trades: [{ id: 2 }] },
+      ];
+      http.expectOne(`${base}/strategy/simulation/start`).flush(snapshot);
+
+      expect(state().tradesFor('sess-ce').length).toBe(1);
+      expect(state().tradesFor('sess-other').length).toBe(1);
+      expect(state().tradesFor(null).length).toBe(0);
+      // Stable identity between reads, so the chart does not rebuild every
+      // marker on every change-detection pass.
+      expect(state().tradesFor('sess-ce')).toBe(state().tradesFor('sess-ce'));
+    });
+
+    it('refuses a capital that is not a positive number', () => {
+      flushCascade();
+      flushCatalogue();
+      state().callStrike.set(24500);
+      state().toggleStrategy('vwap-ema-trend');
+      state().capital.set(0);
+      state().start();
+
+      http.expectNone(`${base}/strategy/simulation/start`);
+      expect(state().formError()).toContain('Capital');
+    });
+
+    it('toggles a strategy off as readily as on', () => {
+      flushCascade();
+      flushCatalogue();
+
+      state().toggleStrategy('vwap-reclaim');
+      expect(state().selected()).toEqual(['vwap-reclaim']);
+      state().toggleStrategy('vwap-reclaim');
+      expect(state().selected()).toEqual([]);
+    });
+
+    it('counts one book per strategy per leg, and says so before Start is pressed', () => {
+      flushCascade();
+      flushCatalogue();
+
+      state().callStrike.set(24500);
+      state().putStrike.set(24000);
+      state().toggleStrategy('vwap-ema-trend');
+      state().toggleStrategy('vwap-reclaim');
+
+      expect(state().bookCount()).toBe(4);
+      expect(state().plan()).toContain('4 paper books');
+    });
+
+    it('surfaces a rejected start instead of leaving the button spinning', () => {
+      flushCascade();
+      flushCatalogue();
+      state().callStrike.set(24500);
+      state().toggleStrategy('vwap-ema-trend');
+      state().start();
+
+      http
+        .expectOne(`${base}/strategy/simulation/start`)
+        .flush(
+          { error: { code: 'VALIDATION_ERROR', message: 'capital is required' } },
+          { status: 400, statusText: 'Bad Request' },
+        );
+
+      expect(state().starting()).toBe(false);
+      expect(state().formError()).toBe('capital is required');
     });
   });
 });

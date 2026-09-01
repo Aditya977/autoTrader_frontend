@@ -3,8 +3,17 @@ import { Router } from '@angular/router';
 import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import type { Subscription } from 'rxjs';
 import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
+import { StrategyApiService } from '../strategy/strategy-api.service';
+import { SimulationSocketService } from '../strategy/simulation-socket.service';
+import { StrategyPanelComponent } from '../strategy/strategy-panel.component';
+import type {
+  SimTrade,
+  SimulationRunSnapshot,
+  StrategyDescriptor,
+} from '../strategy/strategy.models';
 import { UpstoxAuthService } from '../auth/upstox-auth.service';
 import { DISPLAY_INTERVALS, intervalNameFor } from './chart-time';
 import type {
@@ -126,6 +135,13 @@ function lastWeekdayKey(now: Date): string {
   return ist.toISOString().slice(0, 10);
 }
 
+/** Capital defaults, offered as choices so the field opens on something usable. */
+const DEFAULT_CAPITAL = 100_000;
+
+/** Nothing to show for a panel with no simulation behind it. Shared, so the
+ *  identity is stable and the chart's marker effect does not re-run each pass. */
+const NO_TRADES: readonly SimTrade[] = [];
+
 /** One running chart: an instrument, and the session request that fills it. */
 interface ChartPanel {
   /**
@@ -138,12 +154,19 @@ interface ChartPanel {
   label: string;
   leg: 'CE' | 'PE' | null;
   request: StartStreamRequest;
+  /**
+   * Set when a strategy run started the session and the panel should attach to
+   * it rather than start its own — otherwise the chart on screen would be a
+   * second replay of the same instrument, and the trade marks drawn on it would
+   * belong to the other one.
+   */
+  sessionId: string | null;
 }
 
 @Component({
   selector: 'app-chart-stream-page',
   standalone: true,
-  imports: [DatePipe, FormsModule, ChartStreamComponent],
+  imports: [DatePipe, FormsModule, ChartStreamComponent, StrategyPanelComponent],
   template: `
     <header class="topbar">
       <div class="brand">
@@ -291,6 +314,61 @@ interface ChartPanel {
           }
         </div>
 
+        <div class="strategies">
+          <div class="picker">
+            <span class="ttl">Strategies</span>
+            <div class="chips">
+              @for (s of catalogue(); track s.id) {
+                <button
+                  type="button"
+                  class="chip"
+                  [class.on]="isSelected(s.id)"
+                  [attr.aria-pressed]="isSelected(s.id)"
+                  [title]="s.description"
+                  (click)="toggleStrategy(s.id)"
+                >
+                  <i class="mark">{{ isSelected(s.id) ? '✓' : '+' }}</i>
+                  {{ s.name }}
+                  <em>{{ s.timeframeMinutes }}m</em>
+                </button>
+              } @empty {
+                <span class="none">{{ catalogueNote() }}</span>
+              }
+            </div>
+          </div>
+
+          <label class="capital">
+            <span>Capital per strategy</span>
+            <input
+              type="number"
+              min="1000"
+              step="5000"
+              [(ngModel)]="capital"
+              name="capital"
+              [disabled]="selected().length === 0"
+            />
+          </label>
+
+          <label class="toggle">
+            <input
+              type="checkbox"
+              [(ngModel)]="journal"
+              name="journal"
+              [disabled]="selected().length === 0"
+            />
+            <span>Record to journal</span>
+          </label>
+        </div>
+
+        @if (selected().length) {
+          <p class="notice">
+            Each selected strategy gets its <strong>own</strong> ₹{{ capitalLabel() }} book on each
+            chart, so their results are comparable rather than competing for one pot —
+            {{ bookCount() }} book{{ bookCount() === 1 ? '' : 's' }} in total. Exits are charged ₹40
+            flat; entries are not.
+          </p>
+        }
+
         <div class="actions">
           <div class="timeframe" role="group" aria-label="Bar interval">
             @for (i of displayIntervals; track i.seconds) {
@@ -305,7 +383,9 @@ interface ChartPanel {
           </div>
 
           <p class="plan">{{ plan() }}</p>
-          <button type="button" class="primary" (click)="start()">Start</button>
+          <button type="button" class="primary" [disabled]="starting()" (click)="start()">
+            {{ starting() ? 'Starting…' : 'Start' }}
+          </button>
         </div>
 
         @if (formError(); as message) {
@@ -327,11 +407,17 @@ interface ChartPanel {
         }
       </section>
 
+      @if (run(); as r) {
+        <app-strategy-panel [run]="r" (stop)="stopRun()" />
+      }
+
       @if (panels().length) {
         <section class="grid" [class.pair]="panels().length > 1">
           @for (panel of panels(); track panel.key) {
             <app-chart-stream
               [request]="panel.request"
+              [sessionId]="panel.sessionId"
+              [trades]="tradesFor(panel.sessionId)"
               [label]="panel.label"
               [leg]="panel.leg"
               [displaySeconds]="displaySeconds()"
@@ -446,6 +532,115 @@ interface ChartPanel {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
       gap: 0.75rem 0.9rem;
+    }
+
+    /* --- strategy picker ------------------------------------------------- */
+
+    .strategies {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 0.75rem 1.2rem;
+      margin-top: 0.9rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .picker {
+      flex: 1 1 340px;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .picker .ttl {
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+
+    /* Chips rather than a multi-select: a native multiple-select needs a
+       modifier key nobody discovers, and hides the description a strategy
+       needs to be chosen on. */
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.3rem 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      background: transparent;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition:
+        border-color 0.12s ease,
+        color 0.12s ease,
+        background 0.12s ease;
+    }
+
+    .chip:hover {
+      border-color: var(--accent);
+      color: var(--text);
+    }
+
+    .chip.on {
+      border-color: rgba(79, 209, 165, 0.6);
+      background: rgba(38, 161, 123, 0.14);
+      color: #4fd1a5;
+    }
+
+    .chip .mark {
+      font-style: normal;
+      font-size: 0.7rem;
+      opacity: 0.8;
+    }
+
+    .chip em {
+      font-style: normal;
+      font-size: 0.66rem;
+      opacity: 0.6;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chips .none {
+      font-size: 0.72rem;
+      color: var(--text-faint);
+    }
+
+    label.capital {
+      flex: 0 0 auto;
+      width: 170px;
+    }
+
+    label.toggle {
+      flex-direction: row;
+      align-items: center;
+      gap: 0.4rem;
+      padding-bottom: 0.35rem;
+    }
+
+    label.toggle > span {
+      font-size: 0.72rem;
+      text-transform: none;
+      letter-spacing: 0;
+      font-weight: 400;
+      color: var(--text-muted);
+    }
+
+    label.toggle input {
+      width: auto;
+      accent-color: var(--accent);
     }
 
     label {
@@ -578,6 +773,8 @@ interface ChartPanel {
 })
 export class ChartStreamPageComponent {
   private readonly api = inject(ChartStreamApiService);
+  private readonly strategyApi = inject(StrategyApiService);
+  private readonly simulation = inject(SimulationSocketService);
   private readonly destroyRef = inject(DestroyRef);
   protected readonly auth = inject(UpstoxAuthService);
   private readonly router = inject(Router);
@@ -638,6 +835,44 @@ export class ChartStreamPageComponent {
   protected readonly formError = signal<string | null>(null);
   protected readonly panels = signal<ChartPanel[]>([]);
 
+  /* --- strategy simulation ---------------------------------------------- */
+
+  protected readonly catalogue = signal<StrategyDescriptor[]>([]);
+  protected readonly catalogueNote = signal('Loading…');
+  /** Ids, in the order they were picked. Empty = chart only, no simulation. */
+  protected readonly selected = signal<string[]>([]);
+  protected readonly capital = signal(DEFAULT_CAPITAL);
+  protected readonly journal = signal(false);
+  protected readonly starting = signal(false);
+
+  /**
+   * The run as the backend last described it.
+   *
+   * Replaced wholesale on every socket frame — each one carries the complete
+   * run — so nothing here reconciles or accumulates, and a reconnect needs no
+   * special case.
+   */
+  protected readonly run = signal<SimulationRunSnapshot | null>(null);
+  private runSocket: Subscription | null = null;
+
+  /**
+   * Trades keyed by the chart session that produced them.
+   *
+   * Computed rather than filtered in the template so each panel gets a *stable*
+   * array reference between frames: the chart redraws its markers whenever the
+   * input identity changes, and a fresh array per change-detection pass would
+   * rebuild every marker on every mouse move.
+   */
+  private readonly tradesBySession = computed(() => {
+    const bySession = new Map<string, SimTrade[]>();
+    for (const book of this.run()?.books ?? []) {
+      const existing = bySession.get(book.sessionId);
+      if (existing) existing.push(...book.trades);
+      else bySession.set(book.sessionId, [...book.trades]);
+    }
+    return bySession;
+  });
+
   protected readonly isOption = computed(() => this.kind() === 'OPTIONS');
   protected readonly needsExpiry = computed(() => this.kind() !== 'INDEX');
 
@@ -656,7 +891,17 @@ export class ChartStreamPageComponent {
       legs.length === 1
         ? `Charts ${legs[0].label}.`
         : `Charts ${legs[0].label} and ${legs[1].label} side by side.`;
-    return `${what}${this.levelPlan()}`;
+    return `${what}${this.levelPlan()}${this.strategyPlan()}`;
+  });
+
+  /** The simulation half of the plan line — empty when no strategy is picked. */
+  private readonly strategyPlan = computed(() => {
+    const count = this.selected().length;
+    if (count === 0) return '';
+    const books = this.bookCount();
+    return ` Runs ${count} ${count === 1 ? 'strategy' : 'strategies'} over ${books} paper book${
+      books === 1 ? '' : 's'
+    }.`;
   });
 
   /** The S/R half of the plan line — empty when levels are off. */
@@ -680,24 +925,83 @@ export class ChartStreamPageComponent {
    * validation, the plan line, the panels — wants "what is selected", and the
    * count is the only thing that differs between one chart and two.
    */
-  private readonly selectedLegs = computed<
-    { leg: 'CE' | 'PE'; strike: number; label: string }[]
-  >(() => {
-    if (!this.isOption()) return [];
-    const legs: { leg: 'CE' | 'PE'; strike: number; label: string }[] = [];
-    const call = this.callStrike();
-    if (call !== null) {
-      legs.push({ leg: 'CE', strike: call, label: this.contractName('CE', call) });
-    }
-    const put = this.putStrike();
-    if (put !== null) {
-      legs.push({ leg: 'PE', strike: put, label: this.contractName('PE', put) });
-    }
-    return legs;
-  });
+  private readonly selectedLegs = computed<{ leg: 'CE' | 'PE'; strike: number; label: string }[]>(
+    () => {
+      if (!this.isOption()) return [];
+      const legs: { leg: 'CE' | 'PE'; strike: number; label: string }[] = [];
+      const call = this.callStrike();
+      if (call !== null) {
+        legs.push({ leg: 'CE', strike: call, label: this.contractName('CE', call) });
+      }
+      const put = this.putStrike();
+      if (put !== null) {
+        legs.push({ leg: 'PE', strike: put, label: this.contractName('PE', put) });
+      }
+      return legs;
+    },
+  );
+
+  /** What a run will cost in books: one per strategy per chart. */
+  protected readonly bookCount = computed(
+    () => this.selected().length * Math.max(1, this.plannedCharts()),
+  );
+
+  /** Charts a Start would open, given what is selected right now. */
+  private readonly plannedCharts = computed(() =>
+    this.isOption() ? this.selectedLegs().length : 1,
+  );
+
+  protected readonly capitalLabel = computed(() =>
+    Math.round(Number(this.capital()) || 0).toLocaleString('en-IN'),
+  );
 
   constructor() {
     this.loadUnderlyings();
+    this.loadCatalogue();
+  }
+
+  protected isSelected(id: string): boolean {
+    return this.selected().includes(id);
+  }
+
+  protected toggleStrategy(id: string): void {
+    this.selected.update((ids) =>
+      ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id],
+    );
+  }
+
+  /** The trades to mark on one panel's chart, or a shared empty list. */
+  protected tradesFor(sessionId: string | null): readonly SimTrade[] {
+    if (!sessionId) return NO_TRADES;
+    return this.tradesBySession().get(sessionId) ?? NO_TRADES;
+  }
+
+  protected stopRun(): void {
+    const runId = this.run()?.runId;
+    if (!runId) return;
+    this.strategyApi
+      .stop(runId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (run) => this.run.set(run),
+        error: (e: ChartStreamError) => this.formError.set(e.message),
+      });
+  }
+
+  private loadCatalogue(): void {
+    this.strategyApi
+      .catalogue()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: ({ strategies }) => {
+          this.catalogue.set(strategies);
+          this.catalogueNote.set(strategies.length ? '' : 'This build ships no strategies.');
+        },
+        // Not `formError`: a catalogue that cannot be read is a missing
+        // feature, not a broken form, and charting still works without it.
+        error: (e: ChartStreamError) =>
+          this.catalogueNote.set(`Could not load strategies — ${e.message}`),
+      });
   }
 
   /**
@@ -901,7 +1205,88 @@ export class ChartStreamPageComponent {
       return;
     }
 
-    this.panels.set(panels);
+    // Whatever was running is finished with — its socket, and the numbers on
+    // screen that belong to it.
+    this.releaseRun();
+
+    const strategies = this.selected();
+    if (strategies.length === 0) {
+      // No strategies: the panels start their own sessions exactly as before.
+      this.panels.set(panels);
+      return;
+    }
+
+    const capital = Number(this.capital());
+    if (!Number.isFinite(capital) || capital <= 0) {
+      this.formError.set('Capital must be a positive number.');
+      return;
+    }
+
+    // With strategies selected the *simulation* starts the sessions, because it
+    // has to be subscribed to them before their bars are published — at
+    // `replaySpeed: 0` the whole day is over in milliseconds. The panels then
+    // attach to the very sessions the strategies are reading, so the marks and
+    // the candles under them come from one replay rather than two.
+    this.starting.set(true);
+    this.strategyApi
+      .start({
+        capital,
+        strategies,
+        charts: panels.map((panel) => panel.request),
+        journal: this.journal(),
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (run) => {
+          this.starting.set(false);
+          this.run.set(run);
+          // Paired by position: the backend starts one session per entry of
+          // `charts`, in the order it was given them.
+          this.panels.set(
+            panels.map((panel, index) => ({
+              ...panel,
+              sessionId: run.charts[index]?.sessionId ?? null,
+            })),
+          );
+          this.listenToRun(run.runId);
+        },
+        error: (e: ChartStreamError) => {
+          this.starting.set(false);
+          this.formError.set(e.message);
+        },
+      });
+  }
+
+  /**
+   * Follows a run to its end.
+   *
+   * Every frame is a complete snapshot, so this is a straight assignment — no
+   * merge, no reconciliation, and a dropped frame or a reconnect costs nothing.
+   */
+  private listenToRun(runId: string): void {
+    this.runSocket?.unsubscribe();
+    this.runSocket = this.simulation
+      .connect(runId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (event) => this.run.set(event.run),
+        error: () => {
+          /* the socket reconnects itself; the last snapshot stays on screen */
+        },
+      });
+  }
+
+  /**
+   * Lets go of the current run without stopping it.
+   *
+   * Deliberately not a `POST …/stop`: pressing Start again is "show me this
+   * instead", and silently stopping a live run the user may still have been
+   * reading would be a surprise. The run ages out of the backend on its own.
+   */
+  private releaseRun(): void {
+    this.runSocket?.unsubscribe();
+    this.runSocket = null;
+    this.run.set(null);
   }
 
   /**
@@ -973,6 +1358,8 @@ export class ChartStreamPageComponent {
       label,
       leg,
       request,
+      // Filled in by `start()` when a simulation supplies the session.
+      sessionId: null,
     };
   }
 }

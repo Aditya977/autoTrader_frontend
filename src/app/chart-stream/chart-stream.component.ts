@@ -11,6 +11,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import type { Subscription } from 'rxjs';
 import {
   CandlestickSeries,
   ColorType,
@@ -18,9 +19,11 @@ import {
   HistogramSeries,
   LineStyle,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type PriceLineOptions,
   TickMarkType,
   type MouseEventParams,
@@ -54,6 +57,8 @@ import {
   type StartStreamRequest,
   type SupportResistanceLevel,
 } from './chart-stream.models';
+import { markersFor } from '../strategy/trade-markers';
+import type { SimTrade } from '../strategy/strategy.models';
 
 /**
  * Chart colours, kept in TypeScript rather than read back out of CSS.
@@ -108,9 +113,7 @@ function priceLineFor(level: SupportResistanceLevel): PriceLineOptions {
     axisLabelVisible: !pivot,
     axisLabelColor: fade(base, 0.85),
     axisLabelTextColor: '#06121d',
-    title: pivot
-      ? level.label
-      : `${level.kind === 'SUPPORT' ? 'S' : 'R'}·${level.touches}`,
+    title: pivot ? level.label : `${level.kind === 'SUPPORT' ? 'S' : 'R'}·${level.touches}`,
   };
 }
 
@@ -228,15 +231,31 @@ interface Readout {
           <div class="tooltip" [style.left.px]="t.x" [style.top.px]="t.y">
             <div class="t-time">{{ t.readout.time }}</div>
             <dl>
-              <div><dt>Open</dt><dd>{{ t.readout.open }}</dd></div>
-              <div><dt>High</dt><dd>{{ t.readout.high }}</dd></div>
-              <div><dt>Low</dt><dd>{{ t.readout.low }}</dd></div>
+              <div>
+                <dt>Open</dt>
+                <dd>{{ t.readout.open }}</dd>
+              </div>
+              <div>
+                <dt>High</dt>
+                <dd>{{ t.readout.high }}</dd>
+              </div>
+              <div>
+                <dt>Low</dt>
+                <dd>{{ t.readout.low }}</dd>
+              </div>
               <div>
                 <dt>Close</dt>
-                <dd [class.up]="(t.readout.changePct ?? 0) >= 0"
-                    [class.down]="(t.readout.changePct ?? 0) < 0">{{ t.readout.close }}</dd>
+                <dd
+                  [class.up]="(t.readout.changePct ?? 0) >= 0"
+                  [class.down]="(t.readout.changePct ?? 0) < 0"
+                >
+                  {{ t.readout.close }}
+                </dd>
               </div>
-              <div><dt>Volume</dt><dd>{{ t.readout.volume }}</dd></div>
+              <div>
+                <dt>Volume</dt>
+                <dd>{{ t.readout.volume }}</dd>
+              </div>
             </dl>
           </div>
         }
@@ -577,6 +596,32 @@ export class ChartStreamComponent {
    * no-op, and comparing by value would swallow it.
    */
   readonly request = input<StartStreamRequest | null>(null);
+
+  /**
+   * A session that has **already been started elsewhere**, to attach to instead
+   * of starting one.
+   *
+   * This is how a strategy simulation and its chart end up looking at the same
+   * bars rather than at two sessions that merely agree: the simulation starts
+   * the session (it has to — it must be subscribed before the replay runs) and
+   * hands the id here. Without it the panel would open a *second* session over
+   * the same instrument, and the marks drawn on this chart would belong to a
+   * different replay than the one on screen.
+   *
+   * `request` is still passed alongside, for the fields the panel reads rather
+   * than sends — whether to start with levels showing, chiefly.
+   */
+  readonly sessionId = input<string | null>(null);
+
+  /**
+   * Simulated trades on **this panel's instrument**, drawn as entry/exit marks.
+   *
+   * The parent filters by instrument; this component draws whatever it is
+   * given. Times are snapped to the interval on screen — see `trade-markers.ts`
+   * for why that is not optional.
+   */
+  readonly trades = input<readonly SimTrade[]>([]);
+
   /** Human name for the panel header — the tradingsymbol, typically. */
   readonly label = input('Chart');
   /** Colours the header badge; `null` for a non-option instrument. */
@@ -588,7 +633,22 @@ export class ChartStreamComponent {
   private chart?: IChartApi;
   private candles?: ISeriesApi<'Candlestick'>;
   private volume?: ISeriesApi<'Histogram'>;
+  /** v5 moved markers out of the series and into a plugin attached to it. */
+  private markers?: ISeriesMarkersPluginApi<Time>;
   private readonly buffer = new CandleSeriesBuffer();
+
+  /**
+   * The session socket currently feeding {@link buffer}.
+   *
+   * Held so the *previous* one can be dropped when this panel moves to another
+   * session. Without that, a restart leaves the old socket open and still
+   * pushing candles into the same buffer — two instruments interleaved on one
+   * chart, or the same instrument from two replays. It self-corrects for a
+   * finished TEST session, whose socket completes on its terminal event, which
+   * is exactly why it stayed invisible: the cases that break are a paced replay
+   * restarted mid-flight and a LIVE chart, both of which stay open forever.
+   */
+  private stream: Subscription | null = null;
 
   /** The price lines currently on the chart, so they can be removed as a set. */
   private priceLines: IPriceLine[] = [];
@@ -682,8 +742,7 @@ export class ChartStreamComponent {
     const bar = hovered ?? this.drawn.at(-1);
     if (!bar) return null;
     return {
-      time:
-        this.displaySeconds() >= 86_400 ? formatIstDay(bar.time) : formatIstStamp(bar.time),
+      time: this.displaySeconds() >= 86_400 ? formatIstDay(bar.time) : formatIstStamp(bar.time),
       open: formatPrice(bar.open),
       high: formatPrice(bar.high),
       low: formatPrice(bar.low),
@@ -756,20 +815,41 @@ export class ChartStreamComponent {
       this.candles.priceScale().applyOptions({
         scaleMargins: { top: 0.08, bottom: 0.24 },
       });
+      this.markers = createSeriesMarkers(this.candles, []);
       this.chart.subscribeCrosshairMove(this.onCrosshair);
-      // Levels can arrive before the canvas exists — a session started with
-      // `levels` publishes its first set within milliseconds of Start.
+      // Levels and trades can both arrive before the canvas exists — a session
+      // started with `levels` publishes its first set within milliseconds of
+      // Start, and an instant replay finishes its whole simulation faster.
       this.drawLevels();
+      this.drawMarkers();
     });
 
     // Starting is driven by the input rather than by a method the parent
     // calls, so a panel that appears because a second leg was selected starts
     // itself — the parent never has to reach into a `viewChild` that may not
     // exist yet on the turn it renders.
+    //
+    // `sessionId` wins when both are set: it means somebody has *already*
+    // started the session this panel is meant to show, and starting a second
+    // one would draw a different replay of the same instrument beside the marks
+    // belonging to the first.
     effect(() => {
+      const adopted = this.sessionId();
       const request = this.request();
+      if (adopted) {
+        untracked(() => this.adopt(adopted, request));
+        return;
+      }
       if (!request) return;
       untracked(() => this.start(request));
+    });
+
+    // Marks follow both the trades and the timeframe, because a marker's time
+    // has to match a bar the chart is actually drawing — see `trade-markers.ts`.
+    effect(() => {
+      this.trades();
+      this.displaySeconds();
+      untracked(() => this.drawMarkers());
     });
 
     // Redrawing on interval change reuses the bars already in the buffer, so
@@ -791,10 +871,58 @@ export class ChartStreamComponent {
       this.chart = undefined;
       this.candles = undefined;
       this.volume = undefined;
+      this.markers = undefined;
     });
   }
 
   start(request: StartStreamRequest): void {
+    this.reset(request);
+
+    this.api
+      .start(request)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (snapshot) => {
+          this.session.set(snapshot);
+          this.listen(snapshot.sessionId);
+        },
+        error: (e: ChartStreamError) => this.error.set(describe(e)),
+      });
+  }
+
+  /**
+   * Attaches to a session somebody else started, instead of starting one.
+   *
+   * The socket is opened immediately rather than after the status call: the
+   * backend replays the session's whole candle backlog to every connection, so
+   * connecting is sufficient to receive the day, and waiting on a round trip
+   * first would be a window in which live bars are missed. The status fetch is
+   * only to fill the header in before the socket's first `SESSION_STATUS`
+   * frame arrives, and a failure to get it is not worth failing the panel over.
+   */
+  private adopt(sessionId: string, request: StartStreamRequest | null): void {
+    if (this.session()?.sessionId === sessionId) return;
+    this.reset(request);
+
+    this.listen(sessionId);
+
+    this.api
+      .status(sessionId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (snapshot) => this.session.set(snapshot),
+        error: () => {
+          /* the socket's own SESSION_STATUS frame is the authority */
+        },
+      });
+  }
+
+  /** Everything both entry points clear before a new session's bars arrive. */
+  private reset(request: StartStreamRequest | null): void {
+    // The socket first: a still-open stream from the last session would refill
+    // the buffer this is about to empty.
+    this.stream?.unsubscribe();
+    this.stream = null;
     this.error.set(null);
     this.session.set(null);
     this.buffer.clear();
@@ -807,19 +935,8 @@ export class ChartStreamComponent {
     this.clearLevels();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
-    this.showLevels.set(request.levels !== undefined);
+    this.showLevels.set(request?.levels !== undefined);
     this.redraw();
-
-    this.api
-      .start(request)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (snapshot) => {
-          this.session.set(snapshot);
-          this.listen(snapshot.sessionId);
-        },
-        error: (e: ChartStreamError) => this.error.set(describe(e)),
-      });
   }
 
   stop(): void {
@@ -835,7 +952,8 @@ export class ChartStreamComponent {
   }
 
   private listen(sessionId: string): void {
-    this.socket
+    this.stream?.unsubscribe();
+    this.stream = this.socket
       .connect(sessionId)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((event) => {
@@ -987,6 +1105,17 @@ export class ChartStreamComponent {
     }
   }
 
+  /**
+   * Draws the simulation's entry and exit arrows.
+   *
+   * A whole replacement set every time, like the levels: the run publishes its
+   * complete trade list on every frame, and a chart that tried to append would
+   * duplicate every mark the first time a socket reconnected.
+   */
+  private drawMarkers(): void {
+    this.markers?.setMarkers(markersFor(this.trades(), this.displaySeconds()));
+  }
+
   /** The backend's name for the bar size on screen. */
   private intervalName(): ChartInterval {
     return intervalNameFor(this.displaySeconds());
@@ -1090,8 +1219,16 @@ export class ChartStreamComponent {
         // pointer, and a magnetised crosshair that snaps to a price makes the
         // reported bar disagree with where the user is looking.
         mode: CrosshairMode.Normal,
-        vertLine: { color: THEME.crosshair, style: LineStyle.Dashed, labelBackgroundColor: '#243444' },
-        horzLine: { color: THEME.crosshair, style: LineStyle.Dashed, labelBackgroundColor: '#243444' },
+        vertLine: {
+          color: THEME.crosshair,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: '#243444',
+        },
+        horzLine: {
+          color: THEME.crosshair,
+          style: LineStyle.Dashed,
+          labelBackgroundColor: '#243444',
+        },
       },
       timeScale: {
         borderColor: THEME.border,

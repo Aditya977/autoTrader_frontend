@@ -12,12 +12,15 @@ import type {
   StartStreamRequest,
   SupportResistanceLevel,
 } from './chart-stream.models';
+import type { SimTrade } from '../strategy/strategy.models';
 
 @Component({
   standalone: true,
   imports: [ChartStreamComponent],
   template: `<app-chart-stream
     [request]="request()"
+    [sessionId]="sessionId()"
+    [trades]="trades()"
     [label]="label()"
     [leg]="leg()"
     [displaySeconds]="displaySeconds()"
@@ -26,6 +29,8 @@ import type {
 class HostComponent {
   readonly chart = viewChild.required(ChartStreamComponent);
   readonly request = signal<StartStreamRequest | null>(null);
+  readonly sessionId = signal<string | null>(null);
+  readonly trades = signal<readonly SimTrade[]>([]);
   readonly label = signal('NIFTY 24350 CE');
   readonly leg = signal<'CE' | 'PE' | null>('CE');
   readonly displaySeconds = signal(60);
@@ -74,7 +79,15 @@ describe('ChartStreamComponent', () => {
   let fixture: ComponentFixture<HostComponent>;
   let host: HostComponent;
   let http: HttpTestingController;
+  /** `sess-1`'s stream — the session every test here starts on. */
   let events: Subject<ChartStreamEvent>;
+  /**
+   * One stream per session id, so a test can push to a session the component
+   * has moved *off*. A single shared subject cannot show that: the buffer keys
+   * bars by time, so a stale subscription re-adding the same bar is idempotent
+   * and a leak looks exactly like correct behaviour.
+   */
+  let streams: Map<string, Subject<ChartStreamEvent>>;
 
   /**
    * Runs the session and settles the batched redraw.
@@ -104,14 +117,26 @@ describe('ChartStreamComponent', () => {
     fixture.nativeElement.querySelector('.state button.stop') as HTMLButtonElement;
 
   beforeEach(async () => {
-    events = new Subject<ChartStreamEvent>();
+    streams = new Map<string, Subject<ChartStreamEvent>>();
+    const streamFor = (sessionId: string): Subject<ChartStreamEvent> => {
+      let stream = streams.get(sessionId);
+      if (!stream) {
+        stream = new Subject<ChartStreamEvent>();
+        streams.set(sessionId, stream);
+      }
+      return stream;
+    };
+    events = streamFor('sess-1');
 
     await TestBed.configureTestingModule({
       imports: [HostComponent],
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: ChartStreamSocketService, useValue: { connect: () => events.asObservable() } },
+        {
+          provide: ChartStreamSocketService,
+          useValue: { connect: (id: string) => streamFor(id).asObservable() },
+        },
       ],
     }).compileComponents();
 
@@ -135,7 +160,9 @@ describe('ChartStreamComponent', () => {
     expect((fixture.nativeElement.querySelector('.status') as HTMLElement).textContent).toContain(
       'idle',
     );
-    expect((fixture.nativeElement.querySelector('.leg') as HTMLElement).textContent).toContain('CE');
+    expect((fixture.nativeElement.querySelector('.leg') as HTMLElement).textContent).toContain(
+      'CE',
+    );
     expect(text()).toContain('NIFTY 24350 CE');
   });
 
@@ -280,6 +307,120 @@ describe('ChartStreamComponent', () => {
     const req = http.expectOne(`${environment.apiBase}/streamer/stream/sess-1/stop`);
     expect(req.request.method).toBe('POST');
     req.flush({ ...SNAPSHOT, status: 'STOPPED' });
+  });
+
+  /**
+   * Attaching to a session somebody else started.
+   *
+   * This is how a strategy simulation and the chart under it end up on the same
+   * bars: the simulation has to start the session itself (it must be subscribed
+   * before the replay publishes anything), so the panel is handed the id rather
+   * than starting a second session over the same instrument.
+   */
+  describe('adopting an existing session', () => {
+    it('does not start a session of its own', () => {
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+
+      http.expectNone(`${environment.apiBase}/streamer/stream/start`);
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+    });
+
+    it('draws the bars that arrive on the adopted session', async () => {
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+
+      events.next(candle(OPEN_MS, 100));
+      events.next(candle(OPEN_MS + MINUTE, 101));
+      await settle();
+
+      expect(host.chart().barCount()).toBe(2);
+    });
+
+    // The socket is opened before the status call returns, deliberately: the
+    // backend replays the whole candle backlog to every connection, and waiting
+    // on a round trip first is a window in which live bars are missed.
+    it('still charts the session when the status call fails', async () => {
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http
+        .expectOne(`${environment.apiBase}/streamer/stream/sess-1`)
+        .flush({}, { status: 500, statusText: 'Server Error' });
+
+      events.next(candle(OPEN_MS, 100));
+      await settle();
+
+      expect(host.chart().barCount()).toBe(1);
+      expect(host.chart().error()).toBeNull();
+    });
+
+    it('takes the status from the socket, which is the authority', async () => {
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+
+      events.next({ type: 'SESSION_STATUS', ...SNAPSHOT, status: 'COMPLETED' } as never);
+      await settle();
+
+      expect(text()).toContain('completed');
+    });
+
+    it('ignores a repeat of the id it is already showing', () => {
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+
+      // A parent re-rendering must not tear the chart down and refetch.
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http.expectNone(`${environment.apiBase}/streamer/stream/sess-1`);
+    });
+
+    it('drops the previous session stream when it moves to another one', async () => {
+      // A still-open socket from the last session would keep filling the buffer
+      // the new one just emptied — two instruments interleaved on one chart.
+      // Invisible for a finished replay, whose socket completes on its own; the
+      // cases that break are a paced replay restarted mid-flight, and LIVE.
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+
+      events.next(candle(OPEN_MS, 100));
+      await settle();
+      expect(host.chart().barCount()).toBe(1);
+
+      host.sessionId.set('sess-2');
+      fixture.detectChanges();
+      http
+        .expectOne(`${environment.apiBase}/streamer/stream/sess-2`)
+        .flush({ ...SNAPSHOT, sessionId: 'sess-2' });
+
+      // Pushed onto the session the panel has left. If its subscription is
+      // still alive this bar lands in the buffer the new session owns.
+      events.next(candle(OPEN_MS + 5 * MINUTE, 200));
+      await settle();
+
+      // `sess-2` has published nothing, so the chart is empty — and stays empty
+      // however loudly `sess-1` keeps talking.
+      expect(host.chart().barCount()).toBe(0);
+
+      const current = streams.get('sess-2');
+      current?.next({ ...(candle(OPEN_MS, 300) as object), sessionId: 'sess-2' } as never);
+      await settle();
+      expect(host.chart().barCount()).toBe(1);
+    });
+
+    it('takes the adopted session over a request, never both', () => {
+      host.request.set(REQUEST);
+      host.sessionId.set('sess-1');
+      fixture.detectChanges();
+
+      // Starting one as well would put a second replay of the same instrument
+      // beside marks that belong to the first.
+      http.expectNone(`${environment.apiBase}/streamer/stream/start`);
+      http.expectOne(`${environment.apiBase}/streamer/stream/sess-1`).flush(SNAPSHOT);
+    });
   });
 });
 
