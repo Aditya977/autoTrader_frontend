@@ -31,6 +31,7 @@ function trade(overrides: Partial<SimTrade> = {}): SimTrade {
     netPnlPct: 19.7,
     mae: -200,
     mfe: 3100,
+    barsHeld: 3,
     features: {},
     ...overrides,
   };

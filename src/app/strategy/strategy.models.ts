@@ -11,15 +11,44 @@ import type { ChartSessionStatus, StartStreamRequest } from '../chart-stream/cha
  * backend's reasoning.
  */
 
+/**
+ * One tunable number, with the bounds that make it tunable safely.
+ *
+ * `description` is what tells a reader — or an analysis proposing a change —
+ * why moving this number would do anything, so it is worth showing as help text
+ * rather than hiding.
+ */
+export interface StrategyParamSpec {
+  key: string;
+  label: string;
+  description: string;
+  min: number;
+  max: number;
+  step: number;
+  integer: boolean;
+}
+
 /** A strategy the backend can run. Authored in code; there is no create endpoint. */
 export interface StrategyDescriptor {
   id: string;
   name: string;
   description: string;
+  /**
+   * What it is meant to trade.
+   *
+   * Load-bearing rather than documentation: an index carries no volume, so a
+   * VWAP strategy pointed at one never warms up and takes zero trades — which
+   * reads as a quiet month rather than as the mismatch it is. The backtest tab
+   * filters on this so the pairing cannot be made by accident.
+   */
+  instrument: 'INDEX' | 'OPTION' | 'ANY';
   /** Bar size the strategy reasons on. The chart's own interval is independent. */
   timeframeMinutes: number;
   /** Bars it needs before its first real decision — why history matters. */
   warmupBars: number;
+  /** The bounds every override is checked against. */
+  paramSpecs: StrategyParamSpec[];
+  /** The defaults an override is merged onto. */
   params: Record<string, number>;
 }
 
@@ -33,7 +62,8 @@ export interface SimTrade {
   strategyId: string;
   instrumentKey: string;
   tradingsymbol: string;
-  side: 'BUY';
+  /** Long or short — price action needs both. */
+  side: 'BUY' | 'SELL';
   status: 'OPEN' | 'CLOSED';
   quantity: number;
   lots: number;
@@ -57,6 +87,8 @@ export interface SimTrade {
   /** Worst / best mark-to-market while held, in rupees. */
   mae: number;
   mfe: number;
+  /** Bars the position was held for, at the strategy's timeframe. */
+  barsHeld: number;
   features: Record<string, number | null>;
 }
 

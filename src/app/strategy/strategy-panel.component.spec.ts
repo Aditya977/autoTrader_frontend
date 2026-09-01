@@ -30,6 +30,7 @@ function trade(overrides: Partial<SimTrade> = {}): SimTrade {
     netPnlPct: 19.7,
     mae: -200,
     mfe: 3100,
+    barsHeld: 3,
     features: {},
     ...overrides,
   };
@@ -89,8 +90,10 @@ function run(overrides: Partial<SimulationRunSnapshot> = {}): SimulationRunSnaps
         id: 'vwap-ema-trend',
         name: 'VWAP + EMA trend',
         description: 'buys strength',
+        instrument: 'OPTION',
         timeframeMinutes: 5,
         warmupBars: 26,
+        paramSpecs: [],
         params: {},
       },
     ],

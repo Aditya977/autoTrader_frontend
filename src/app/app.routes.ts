@@ -10,6 +10,15 @@ export const routes: Routes = [
     loadComponent: () => import('./auth/login-page.component').then((m) => m.LoginPageComponent),
   },
   {
+    path: 'backtest',
+    // Same guard as the chart: every endpoint this route calls sits behind an
+    // Upstox session, so an unauthenticated visit would render a page whose
+    // every request 401s.
+    canActivate: [authGuard],
+    loadComponent: () =>
+      import('./backtest/backtest-page.component').then((m) => m.BacktestPageComponent),
+  },
+  {
     path: 'chart',
     // Every endpoint this route calls is behind an Upstox session, so an
     // unauthenticated visit would render a page whose every request 401s.

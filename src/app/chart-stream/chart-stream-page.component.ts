@@ -4,6 +4,7 @@ import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import type { Subscription } from 'rxjs';
+import { NavTabsComponent } from '../shared/nav-tabs.component';
 import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
 import { StrategyApiService } from '../strategy/strategy-api.service';
@@ -166,7 +167,7 @@ interface ChartPanel {
 @Component({
   selector: 'app-chart-stream-page',
   standalone: true,
-  imports: [DatePipe, FormsModule, ChartStreamComponent, StrategyPanelComponent],
+  imports: [DatePipe, FormsModule, NavTabsComponent, ChartStreamComponent, StrategyPanelComponent],
   template: `
     <header class="topbar">
       <div class="brand">
@@ -176,6 +177,8 @@ interface ChartPanel {
           <span class="sub">Upstox live &amp; replay</span>
         </div>
       </div>
+
+      <app-nav-tabs />
 
       <div class="account">
         <span class="badge"><i class="dot"></i>Signed in</span>
