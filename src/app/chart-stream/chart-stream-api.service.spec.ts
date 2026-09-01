@@ -79,15 +79,17 @@ describe('ChartStreamApiService', () => {
     expect(caught!.issues).toEqual([]);
   });
 
-  it('lists underlyings from /streamer/instruments/underlyings', () => {
-    let received: string[] | undefined;
-    api.underlyings().subscribe((r) => (received = r.underlyings));
+  it('lists underlyings and research equities separately', () => {
+    let received: { underlyings: string[]; equities: string[] } | undefined;
+    api.underlyings().subscribe((r) => (received = r));
 
     const req = http.expectOne(`${environment.apiBase}/streamer/instruments/underlyings`);
     expect(req.request.method).toBe('GET');
-    req.flush({ underlyings: ['BANKNIFTY', 'NIFTY'] });
+    req.flush({ underlyings: ['BANKNIFTY', 'NIFTY'], equities: ['RELIANCE'] });
 
-    expect(received).toEqual(['BANKNIFTY', 'NIFTY']);
+    // Two lists, because only the first has a chain behind it to chart.
+    expect(received!.underlyings).toEqual(['BANKNIFTY', 'NIFTY']);
+    expect(received!.equities).toEqual(['RELIANCE']);
   });
 
   it('sends underlying and expiry as query params when fetching a chain', () => {

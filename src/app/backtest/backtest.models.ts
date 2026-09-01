@@ -46,6 +46,17 @@ export interface CaptureDatasetRequest {
    * being nameable. `0` captures the index alone.
    */
   strikesPerSide?: number;
+  /**
+   * Cash equities to capture — **research data, never traded**.
+   *
+   * They exist for one reason: an option expiry lives for weeks, so a captured
+   * month is all there is, and twenty-one days cannot separate an edge from a
+   * lucky run. An equity has years of intraday history.
+   *
+   * A symbol must be listed in the backend's `RESEARCH_SYMBOLS` for the
+   * instrument master to have synced it.
+   */
+  equities?: string[];
 }
 
 /**
@@ -66,6 +77,8 @@ export interface DatasetInstrument {
   firstDate: string;
   lastDate: string;
   tradingDays: number;
+  /** Whether the series carries volume — an index does not; an option or an equity does. */
+  hasVolume: boolean;
 }
 
 /* -------------------------------------------------------------------------
@@ -201,6 +214,16 @@ export interface BacktestDetail extends BacktestSummary {
   skippedDays: number;
 }
 
+/**
+ * The bar sizes a run may be asked for — mirrored from the backend's
+ * `SUPPORTED_TIMEFRAMES`, which refuses anything else.
+ *
+ * The list is closed for a reason worth knowing: the aggregator floors its
+ * buckets against a fixed 09:15, so a timeframe only keeps every session's open
+ * on a boundary if it divides the 1,440-minute day evenly. These do.
+ */
+export const TIMEFRAMES = [1, 3, 5, 15, 30] as const;
+
 export interface RunBacktestRequest {
   datasetId: number;
   /** Which contract to trade. Omitted, the most liquid option leg is chosen. */
@@ -209,10 +232,15 @@ export interface RunBacktestRequest {
   params?: Record<string, number>;
   capital?: number;
   lotSize?: number;
-  /** Share of notional a position ties up. `1` for an option bought outright. */
-  marginFraction?: number;
-  /** Share of free cash one position may deploy. `1` goes all-in. */
-  exposureFraction?: number;
+  /**
+   * Bar size to run on, overriding the one the strategy declares.
+   *
+   * The same rules on a different bar are a different experiment — a 1-minute
+   * VWAP reclaim fires many times a day where a 30-minute one barely fires — so
+   * it belongs on the run rather than in the compiled registry. One of
+   * {@link TIMEFRAMES}.
+   */
+  timeframeMinutes?: number;
   label?: string;
   notes?: string;
   /** The holdout discipline, as two dates. */

@@ -34,14 +34,19 @@ export interface StrategyDescriptor {
   name: string;
   description: string;
   /**
-   * What it is meant to trade.
+   * Whether the strategy needs the bars to carry **volume**.
    *
-   * Load-bearing rather than documentation: an index carries no volume, so a
-   * VWAP strategy pointed at one never warms up and takes zero trades — which
-   * reads as a quiet month rather than as the mismatch it is. The backtest tab
-   * filters on this so the pairing cannot be made by accident.
+   * Load-bearing rather than documentation: an index carries none — not little,
+   * none — so a volume-weighted strategy pointed at one never warms up and
+   * takes zero trades, which reads as a quiet month rather than as the mismatch
+   * it is. The backtest tab filters on this so the pairing cannot be made by
+   * accident, and the backend refuses it too.
+   *
+   * Stated as a requirement rather than as a kind of instrument, so an equity —
+   * which is neither an index nor an option, and does carry volume — needs no
+   * new case anywhere.
    */
-  instrument: 'INDEX' | 'OPTION' | 'ANY';
+  requiresVolume: boolean;
   /** Bar size the strategy reasons on. The chart's own interval is independent. */
   timeframeMinutes: number;
   /** Bars it needs before its first real decision — why history matters. */

@@ -3,13 +3,14 @@ import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Router } from '@angular/router';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ChartStreamError } from '../chart-stream/chart-stream-api.service';
+import { ChartStreamApiService, ChartStreamError } from '../chart-stream/chart-stream-api.service';
 import { StrategyApiService } from '../strategy/strategy-api.service';
 import type { StrategyDescriptor } from '../strategy/strategy.models';
 import { UpstoxAuthService } from '../auth/upstox-auth.service';
 import { NavTabsComponent } from '../shared/nav-tabs.component';
 import { BacktestApiService } from './backtest-api.service';
 import { BacktestResultComponent } from './backtest-result.component';
+import { TIMEFRAMES } from './backtest.models';
 import type {
   BacktestComparison,
   BacktestDetail,
@@ -18,20 +19,51 @@ import type {
   JournalDataset,
 } from './backtest.models';
 
-/** Calls and puts either side of the money, captured alongside the index. */
+/**
+ * What a capture is aimed at — and the reason the form has two shapes.
+ *
+ * A derivative capture needs an underlying and a strike count; a stock needs
+ * neither and has no expiry to anchor to. One form carrying every field asked
+ * about strikes to capture RELIANCE, and offered an underlying that had nothing
+ * to do with the symbol being fetched.
+ */
+type CaptureMode = 'DERIVATIVE' | 'EQUITY';
+
+const MODES: { value: CaptureMode; label: string }[] = [
+  { value: 'DERIVATIVE', label: 'Index & options' },
+  { value: 'EQUITY', label: 'Stock' },
+];
+
+/**
+ * Calls and puts either side of the money — `2` means two calls and two puts,
+ * captured alongside the index itself.
+ */
 const STRIKE_CHOICES = [
-  { value: 2, label: '2 either side of the money' },
+  { value: 2, label: '2 strikes either side of the money' },
   { value: 3, label: '3 either side' },
   { value: 5, label: '5 either side' },
   { value: 0, label: 'Index only (no options)' },
 ];
 
-/** Capture windows offered, in calendar days back from the current expiry. */
-const LOOKBACKS = [
+/**
+ * Capture windows, in calendar days back from the expiry (or today).
+ *
+ * The two lists differ because the instruments do. An option chain cannot go
+ * back further than the expiry it is anchored to, so months are the unit; a
+ * stock has years, and years are the whole reason it is capturable at all.
+ */
+const DERIVATIVE_LOOKBACKS = [
   { value: 30, label: '1 month' },
   { value: 60, label: '2 months' },
   { value: 90, label: '3 months' },
   { value: 180, label: '6 months' },
+];
+
+const EQUITY_LOOKBACKS = [
+  { value: 180, label: '6 months' },
+  { value: 365, label: '1 year' },
+  { value: 730, label: '2 years' },
+  { value: 1825, label: '5 years' },
 ];
 
 /**
@@ -95,50 +127,96 @@ const LOOKBACKS = [
       <section class="card">
         <header class="card-head">
           <h2>1 · Captured data</h2>
+          <div class="seg" role="radiogroup" aria-label="What to capture">
+            @for (m of modes; track m.value) {
+              <button
+                type="button"
+                role="radio"
+                [attr.aria-checked]="mode() === m.value"
+                [class.on]="mode() === m.value"
+                (click)="setMode(m.value)"
+              >
+                {{ m.label }}
+              </button>
+            }
+          </div>
           <p class="hint">
-            Option legs around the money, plus the index alongside them. The capture anchors on the
-            nearest expiry <strong>still live</strong> and reaches back from it, which is what makes
-            a month of option history available at all — a settled expiry drops out of the
-            instrument master and its strikes stop being nameable.
+            @if (mode() === 'DERIVATIVE') {
+              Option legs around the money, plus the index alongside them. The capture anchors on
+              the nearest expiry <strong>still live</strong> and reaches back from it, which is what
+              makes a month of option history available at all — a settled expiry drops out of the
+              instrument master and its strikes stop being nameable.
+            } @else {
+              A stock, captured for research and never traded. It is here because an option expiry
+              lives for weeks, so a captured month is all there is — and twenty-one days cannot
+              separate an edge from a lucky run. A stock has years of intraday history, which is the
+              only way to see a strategy across enough regimes to believe the answer.
+            }
           </p>
         </header>
 
         <div class="row">
-          <label>
-            <span>Underlying</span>
-            <select [(ngModel)]="underlying" name="underlying">
-              <option value="NIFTY">NIFTY</option>
-              <option value="BANKNIFTY">BANKNIFTY</option>
-            </select>
-          </label>
+          @if (mode() === 'DERIVATIVE') {
+            <label>
+              <span>Underlying</span>
+              <select [(ngModel)]="underlying" name="underlying">
+                @for (u of underlyings(); track u) {
+                  <option [ngValue]="u">{{ u }}</option>
+                }
+              </select>
+            </label>
+
+            <label>
+              <span>Strikes</span>
+              <select [(ngModel)]="strikesPerSide" name="strikes">
+                @for (s of strikeChoices; track s.value) {
+                  <option [ngValue]="s.value">{{ s.label }}</option>
+                }
+              </select>
+            </label>
+          } @else {
+            <label>
+              <span>Stock</span>
+              <select [(ngModel)]="equity" name="equity" [disabled]="equities().length === 0">
+                @for (e of equities(); track e) {
+                  <option [ngValue]="e">{{ e }}</option>
+                }
+              </select>
+            </label>
+          }
 
           <label>
             <span>History</span>
             <select [(ngModel)]="lookbackDays" name="lookback">
-              @for (l of lookbacks; track l.value) {
+              @for (l of lookbacks(); track l.value) {
                 <option [ngValue]="l.value">{{ l.label }}</option>
               }
             </select>
           </label>
 
-          <label>
-            <span>Strikes</span>
-            <select [(ngModel)]="strikesPerSide" name="strikes">
-              @for (s of strikeChoices; track s.value) {
-                <option [ngValue]="s.value">{{ s.label }}</option>
-              }
-            </select>
-          </label>
-
-          <button type="button" class="primary" [disabled]="capturing()" (click)="capture()">
+          <button
+            type="button"
+            class="primary"
+            [disabled]="capturing() || !canCapture()"
+            (click)="capture()"
+          >
             {{ capturing() ? 'Capturing…' : 'Capture' }}
           </button>
         </div>
 
+        @if (mode() === 'EQUITY' && equities().length === 0) {
+          <p class="hint warnish">
+            This backend synced no research stocks. A symbol has to be in its
+            <code>RESEARCH_SYMBOLS</code> for the instrument master to carry it at all.
+          </p>
+        }
+
         @if (capturing()) {
           <p class="hint working">
-            Pulling a month of one-minute bars. This is minutes of upstream requests, not seconds —
-            leave it running.
+            Pulling one-minute bars. This is minutes of upstream requests, not seconds — leave it
+            running. A window longer than a month is fetched in month-sized pieces and stitched back
+            together, so a multi-year capture takes tens of minutes and may outlive this request: if
+            it gives up, the row keeps filling and shows as <strong>RUNNING</strong> below.
           </p>
         }
 
@@ -232,9 +310,29 @@ const LOOKBACKS = [
               (ngModelChange)="onStrategyChange($event)"
             >
               @for (s of availableStrategies(); track s.id) {
-                <option [ngValue]="s.id">{{ s.name }} · {{ s.timeframeMinutes }}m</option>
+                <option [ngValue]="s.id">{{ s.name }}</option>
               }
             </select>
+          </label>
+
+          <label
+            title="The bar the strategy reasons on. The same rules on a different bar are a different strategy — this is usually the first thing worth changing."
+          >
+            <span>Timeframe</span>
+            <select
+              [ngModel]="timeframeMinutes()"
+              name="timeframe"
+              (ngModelChange)="timeframeMinutes.set(+$event)"
+            >
+              @for (t of timeframes; track t) {
+                <option [ngValue]="t">{{ t }}m</option>
+              }
+            </select>
+            @if (selectedStrategy(); as s) {
+              @if (s.timeframeMinutes !== timeframeMinutes()) {
+                <em>written for {{ s.timeframeMinutes }}m</em>
+              }
+            }
           </label>
 
           <label>
@@ -245,36 +343,6 @@ const LOOKBACKS = [
           <label>
             <span>Lot size</span>
             <input type="number" min="1" step="1" [(ngModel)]="lotSize" name="lot" />
-          </label>
-
-          <label
-            title="Share of free cash a single position may deploy. Going all-in on one option premium loses half the book on one bad day, and the month then measures that rather than the strategy."
-          >
-            <span>Exposure</span>
-            <input
-              type="number"
-              min="0.05"
-              max="1"
-              step="0.05"
-              [ngModel]="exposureFraction()"
-              name="exposure"
-              (ngModelChange)="exposureFraction.set(+$event)"
-            />
-            <em>of cash per trade</em>
-          </label>
-
-          <label [title]="marginHint()">
-            <span>Margin</span>
-            <input
-              type="number"
-              min="0.05"
-              max="1"
-              step="0.05"
-              [ngModel]="marginFraction()"
-              name="margin"
-              (ngModelChange)="marginFraction.set(+$event)"
-            />
-            <em>{{ marginHint() }}</em>
           </label>
         </div>
 
@@ -536,6 +604,15 @@ const LOOKBACKS = [
       color: var(--text-muted);
     }
 
+    .hint.warnish {
+      color: #e3b341;
+    }
+
+    .hint code {
+      font-family: var(--mono, ui-monospace, monospace);
+      font-size: 0.72rem;
+    }
+
     .hint.working {
       margin-top: 0.6rem;
       color: #d9a441;
@@ -547,6 +624,34 @@ const LOOKBACKS = [
       align-items: flex-end;
       gap: 0.75rem 0.9rem;
       margin-bottom: 0.75rem;
+    }
+
+    .seg {
+      display: inline-flex;
+      margin: 0.35rem 0 0.15rem;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      overflow: hidden;
+    }
+
+    .seg button {
+      padding: 0.3rem 0.75rem;
+      border: 0;
+      background: none;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    .seg button + button {
+      border-left: 1px solid var(--border);
+    }
+
+    .seg button.on {
+      background: rgba(56, 139, 253, 0.16);
+      color: var(--text);
+      font-weight: 600;
     }
 
     label {
@@ -751,17 +856,38 @@ const LOOKBACKS = [
 export class BacktestPageComponent {
   private readonly api = inject(BacktestApiService);
   private readonly strategies = inject(StrategyApiService);
+  private readonly instrumentsApi = inject(ChartStreamApiService);
   private readonly destroyRef = inject(DestroyRef);
   private readonly router = inject(Router);
   protected readonly auth = inject(UpstoxAuthService);
 
-  protected readonly lookbacks = LOOKBACKS;
+  protected readonly modes = MODES;
   protected readonly strikeChoices = STRIKE_CHOICES;
+  protected readonly timeframes = TIMEFRAMES;
 
+  protected readonly mode = signal<CaptureMode>('DERIVATIVE');
   protected readonly underlying = signal('NIFTY');
   protected readonly lookbackDays = signal(30);
   protected readonly capturing = signal(false);
   protected readonly strikesPerSide = signal(2);
+  /**
+   * A cash equity to capture instead of the derivative chain — research only.
+   *
+   * Picked from what the backend actually synced rather than typed: a symbol
+   * absent from its `RESEARCH_SYMBOLS` cannot be resolved, and a free-text box
+   * turns that into a failed capture minutes after the button was pressed.
+   */
+  protected readonly equity = signal('');
+
+  /**
+   * The two symbol lists, kept apart the way the backend keeps them.
+   *
+   * `underlyings` is what has a chain behind it; `equities` is research data.
+   * A stock in the first list would be offered on the chart tab beside a strike
+   * picker it can never answer.
+   */
+  protected readonly underlyings = signal<string[]>([]);
+  protected readonly equities = signal<string[]>([]);
   protected readonly datasets = signal<JournalDataset[]>([]);
   protected readonly datasetId = signal<number | null>(null);
   protected readonly instruments = signal<DatasetInstrument[]>([]);
@@ -773,26 +899,14 @@ export class BacktestPageComponent {
   protected readonly capital = signal(500_000);
   protected readonly lotSize = signal(75);
   /**
-   * Share of a position's notional the book ties up.
+   * The bar the run reasons on.
    *
-   * `1` for an option, whose premium is paid in full. An index means an index
-   * *future*, which posts roughly a fifth — and getting that wrong is not a
-   * rounding error: one NIFTY lot is ₹18 lakh of notional, so reserving it in
-   * full makes the strategy untradeable and the run silently returns no trades.
-   * Set from the chosen contract; still editable.
+   * Follows the strategy on selection and is editable from there: a strategy is
+   * *written for* a timeframe, but the same rules on 1-minute and on 30-minute
+   * bars are two different experiments, and which one works is a question for
+   * the measurement rather than for the registry.
    */
-  protected readonly marginFraction = signal(1);
-
-  /**
-   * Share of free cash a single position may deploy.
-   *
-   * A quarter rather than all of it. Going all-in is what an unqualified
-   * "capital" implies and almost never what anyone means — on an option it is
-   * reckless in a way that swamps the measurement, because a premium can halve
-   * in a session and the month's P&L then describes that decision rather than
-   * the strategy.
-   */
-  protected readonly exposureFraction = signal(0.25);
+  protected readonly timeframeMinutes = signal<number>(5);
   protected readonly notes = signal('');
   protected readonly fromDate = signal('');
   protected readonly toDate = signal('');
@@ -810,8 +924,16 @@ export class BacktestPageComponent {
   );
 
   /** `INDEX` when the index is selected, `OPTION` for a call or a put. */
-  protected readonly instrumentKind = computed<'INDEX' | 'OPTION'>(() =>
-    this.selectedInstrument()?.role === 'UNDERLYING' ? 'INDEX' : 'OPTION',
+  protected readonly hasVolume = computed(() => this.selectedInstrument()?.hasVolume ?? true);
+
+  /** The windows this capture mode can honestly offer. See the two lists. */
+  protected readonly lookbacks = computed(() =>
+    this.mode() === 'EQUITY' ? EQUITY_LOOKBACKS : DERIVATIVE_LOOKBACKS,
+  );
+
+  /** A stock capture with no stock to capture is the one unpressable case. */
+  protected readonly canCapture = computed(
+    () => this.mode() === 'DERIVATIVE' || this.equity() !== '',
   );
 
   /**
@@ -823,8 +945,8 @@ export class BacktestPageComponent {
    * cannot be made by accident; the backend refuses it too, with the reason.
    */
   protected readonly availableStrategies = computed(() => {
-    const kind = this.instrumentKind();
-    return this.catalogue().filter((s) => s.instrument === 'ANY' || s.instrument === kind);
+    const hasVolume = this.hasVolume();
+    return this.catalogue().filter((s) => hasVolume || !s.requiresVolume);
   });
 
   /** The most days any leg in this capture covers — what a short one is short of. */
@@ -832,20 +954,32 @@ export class BacktestPageComponent {
     this.instruments().reduce((most, i) => Math.max(most, i.tradingDays), 0),
   );
 
-  protected readonly marginHint = computed(() =>
-    this.instrumentKind() === 'INDEX'
-      ? 'An index future posts about a fifth of the contract value as margin.'
-      : 'An option bought outright is paid for in full.',
-  );
-
   protected readonly selectedStrategy = computed(
     () => this.catalogue().find((s) => s.id === this.strategyId()) ?? null,
   );
 
   constructor() {
+    this.loadSymbols();
     this.loadCatalogue();
     this.loadDatasets();
     this.loadRuns();
+  }
+
+  /**
+   * Switches what is being captured, and moves the window with it.
+   *
+   * The lookback is re-pointed rather than left alone because the two lists
+   * barely overlap: "1 month" is not on offer for a stock, and a stale 30 would
+   * leave the select showing a blank while the request carried a value nobody
+   * chose.
+   */
+  protected setMode(mode: CaptureMode): void {
+    if (this.mode() === mode) return;
+    this.mode.set(mode);
+    const windows = this.lookbacks();
+    if (!windows.some((w) => w.value === this.lookbackDays())) {
+      this.lookbackDays.set((windows[0] as { value: number }).value);
+    }
   }
 
   protected signOut(): void {
@@ -857,15 +991,53 @@ export class BacktestPageComponent {
 
   /* --- data ------------------------------------------------------------- */
 
+  /**
+   * The two symbol pickers, from what this backend actually synced.
+   *
+   * Never a baked-in list: `UNDERLYINGS` and `RESEARCH_SYMBOLS` are deployment
+   * settings, and a hardcoded NIFTY/BANKNIFTY is wrong the moment either
+   * changes.
+   */
+  private loadSymbols(): void {
+    this.instrumentsApi
+      .underlyings()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: ({ underlyings, equities }) => {
+          this.underlyings.set(underlyings);
+          this.equities.set(equities);
+          if (!underlyings.includes(this.underlying())) {
+            this.underlying.set(underlyings[0] ?? '');
+          }
+          if (!equities.includes(this.equity())) {
+            this.equity.set(equities[0] ?? '');
+          }
+        },
+        error: (e: ChartStreamError) => this.error.set(e.message),
+      });
+  }
+
   protected capture(): void {
     this.error.set(null);
     this.capturing.set(true);
+
     this.api
-      .captureDataset({
-        underlyings: [this.underlying()],
-        lookbackDays: Number(this.lookbackDays()),
-        strikesPerSide: Number(this.strikesPerSide()),
-      })
+      .captureDataset(
+        // A research symbol is captured **alone**. Pulling a month of NIFTY
+        // options alongside years of a stock would be minutes of upstream
+        // requests nobody asked for, and the two have nothing to do with each
+        // other.
+        this.mode() === 'EQUITY'
+          ? {
+              equities: [this.equity()],
+              lookbackDays: Number(this.lookbackDays()),
+            }
+          : {
+              underlyings: [this.underlying()],
+              lookbackDays: Number(this.lookbackDays()),
+              strikesPerSide: Number(this.strikesPerSide()),
+            },
+      )
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (dataset) => {
@@ -875,7 +1047,14 @@ export class BacktestPageComponent {
         },
         error: (e: ChartStreamError) => {
           this.capturing.set(false);
-          this.error.set(e.message);
+          this.error.set(
+            `${e.message} — a long capture can outlive its request; check the table below for a row still RUNNING before starting it again.`,
+          );
+          // The capture continues server-side even when the HTTP call gives up:
+          // five years is ~65 sequential upstream requests. Reloading turns a
+          // dead-looking error into a row the user can watch, and stops a second
+          // press duplicating a pull already in flight.
+          this.loadDatasets();
         },
       });
   }
@@ -926,15 +1105,14 @@ export class BacktestPageComponent {
   }
 
   /**
-   * Switching contract re-picks the strategy and the margin.
+   * Switching contract re-picks the strategy when the old one cannot read it.
    *
-   * Both follow from what was chosen: a volume-weighted strategy cannot read an
-   * index, and an index future posts margin where an option is paid for in
-   * full. Leaving either stale is how a run silently measures nothing.
+   * A volume-weighted strategy pointed at an index never warms up and takes
+   * zero trades — which looks like a quiet month rather than the mismatch it
+   * is. Leaving the picker stale is how a run silently measures nothing.
    */
   protected onInstrumentChange(key: string): void {
     this.instrumentKey.set(key);
-    this.marginFraction.set(this.instrumentKind() === 'INDEX' ? 0.2 : 1);
 
     const available = this.availableStrategies();
     if (!available.some((s) => s.id === this.strategyId())) {
@@ -959,11 +1137,20 @@ export class BacktestPageComponent {
       });
   }
 
-  /** Switching strategy resets the parameters to that strategy's defaults. */
+  /**
+   * Switching strategy resets the parameters — and the timeframe — to that
+   * strategy's own.
+   *
+   * The timeframe follows because a strategy is written for a bar: its warm-up,
+   * its stop and its EMA periods were all chosen against one. Starting
+   * somewhere else silently would make the first run of every strategy a
+   * different experiment from the one its author described.
+   */
   protected onStrategyChange(id: string): void {
     this.strategyId.set(id);
     const definition = this.catalogue().find((s) => s.id === id);
     this.params.set({ ...(definition?.params ?? {}) });
+    if (definition) this.timeframeMinutes.set(definition.timeframeMinutes);
   }
 
   protected paramValue(key: string): number | null {
@@ -996,8 +1183,7 @@ export class BacktestPageComponent {
         params: this.params(),
         capital: Number(this.capital()),
         lotSize: Number(this.lotSize()),
-        marginFraction: Number(this.marginFraction()),
-        exposureFraction: Number(this.exposureFraction()),
+        timeframeMinutes: Number(this.timeframeMinutes()),
         ...(this.instrumentKey() ? { instrumentKey: this.instrumentKey() as string } : {}),
         ...(this.notes().trim() ? { notes: this.notes().trim() } : {}),
         ...(this.fromDate() ? { fromDate: this.fromDate() } : {}),

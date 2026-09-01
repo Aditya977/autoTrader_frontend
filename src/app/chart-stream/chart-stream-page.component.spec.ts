@@ -47,9 +47,11 @@ describe('ChartStreamPageComponent', () => {
 
   /** underlyings → expiries → chain, the cascade the page runs on load. */
   function flushCascade(): void {
+    // `equities` rides along on the same response and is research data: never
+    // chartable, because a stock has no expiry for the next picker to ask for.
     http
       .expectOne(`${base}/streamer/instruments/underlyings`)
-      .flush({ underlyings: ['BANKNIFTY', 'NIFTY'] });
+      .flush({ underlyings: ['BANKNIFTY', 'NIFTY'], equities: ['RELIANCE'] });
 
     http
       .expectOne((r) => r.url === `${base}/streamer/instruments/expiries`)
@@ -116,6 +118,7 @@ describe('ChartStreamPageComponent', () => {
     it('populates every picker from the backend, never from a hardcoded list', () => {
       flushCascade();
 
+      // The research stock in the same response stays out of the picker.
       expect(state().underlyings()).toEqual(['BANKNIFTY', 'NIFTY']);
       expect(state().expiries()).toEqual(['2026-08-25', '2026-09-01']);
       expect(state().calls().length).toBe(2);

@@ -10,11 +10,10 @@ const base = environment.apiBase;
 const CATALOGUE = {
   strategies: [
     {
-      id: 'opening-range-break',
-      name: 'Opening range break',
-      description: 'takes the first close outside the opening range',
-      // Price action needs nothing but OHLC, so it runs on either kind.
-      instrument: 'ANY',
+      id: 'price-only',
+      name: 'Price only',
+      description: 'a strategy that needs nothing but OHLC',
+      requiresVolume: false,
       timeframeMinutes: 5,
       warmupBars: 3,
       paramSpecs: [
@@ -43,13 +42,24 @@ const CATALOGUE = {
       id: 'vwap-ema-trend',
       name: 'VWAP + EMA trend',
       description: 'volume weighted, so useless on an index',
-      instrument: 'OPTION',
+      requiresVolume: true,
       timeframeMinutes: 5,
       warmupBars: 26,
       paramSpecs: [],
       params: {},
     },
   ],
+};
+
+/**
+ * The two symbol lists, as the backend keeps them apart.
+ *
+ * A stock is synced for capture only — it has no expiry and no chain — so it
+ * never belongs in `underlyings`, which is what the chart's picker reads.
+ */
+const SYMBOLS = {
+  underlyings: ['BANKNIFTY', 'NIFTY'],
+  equities: ['RELIANCE', 'TCS'],
 };
 
 const DATASETS = [
@@ -84,6 +94,8 @@ const INSTRUMENTS = {
       firstDate: '2026-08-02',
       lastDate: '2026-08-31',
       tradingDays: 21,
+      // An index carries none — not little, none.
+      hasVolume: false,
     },
     {
       instrumentKey: 'NSE_FO|CE-24100',
@@ -96,6 +108,7 @@ const INSTRUMENTS = {
       firstDate: '2026-08-02',
       lastDate: '2026-08-31',
       tradingDays: 21,
+      hasVolume: true,
     },
     {
       instrumentKey: 'NSE_FO|PE-24050',
@@ -108,6 +121,7 @@ const INSTRUMENTS = {
       firstDate: '2026-08-14',
       lastDate: '2026-08-31',
       tradingDays: 10,
+      hasVolume: true,
     },
   ],
 };
@@ -124,6 +138,7 @@ describe('BacktestPageComponent', () => {
    * follows once a capture has been selected.
    */
   function flushBoot(datasets: unknown[] = DATASETS, withInstruments = true): void {
+    http.expectOne(`${base}/streamer/instruments/underlyings`).flush(SYMBOLS);
     http.expectOne(`${base}/strategy/catalogue`).flush(CATALOGUE);
     http.expectOne((r) => r.url === `${base}/streamer/journal/datasets`).flush(datasets);
     http.expectOne((r) => r.url === `${base}/strategy/backtest`).flush({ runs: [] });
@@ -153,7 +168,7 @@ describe('BacktestPageComponent', () => {
   it('picks the most liquid option leg, not the index', () => {
     flushBoot();
     expect(state().instrumentKey()).toBe('NSE_FO|CE-24100');
-    expect(state().instrumentKind()).toBe('OPTION');
+    expect(state().hasVolume()).toBe(true);
   });
 
   it('offers every strategy on an option, which carries volume', () => {
@@ -161,7 +176,7 @@ describe('BacktestPageComponent', () => {
     const ids = state()
       .availableStrategies()
       .map((s: { id: string }) => s.id);
-    expect(ids).toEqual(['opening-range-break', 'vwap-ema-trend']);
+    expect(ids).toEqual(['price-only', 'vwap-ema-trend']);
   });
 
   /**
@@ -176,21 +191,23 @@ describe('BacktestPageComponent', () => {
     const ids = state()
       .availableStrategies()
       .map((s: { id: string }) => s.id);
-    expect(ids).toEqual(['opening-range-break']);
-    expect(state().instrumentKind()).toBe('INDEX');
+    expect(ids).toEqual(['price-only']);
+    expect(state().hasVolume()).toBe(false);
   });
 
   /**
-   * One NIFTY lot is ₹18 lakh of notional. An option is paid for in full; an
-   * index means a future, which posts about a fifth — and reserving the whole
-   * notional makes the strategy untradeable and the run silently empty.
+   * A strategy is written *for* a bar — its warm-up and its periods were chosen
+   * against one — so the picker starts there. It is editable from there because
+   * the same rules on a different bar are a different experiment, and which one
+   * works is a question for the measurement.
    */
-  it('sets the margin from the contract kind', () => {
+  it('starts the timeframe at the one the strategy declares', () => {
     flushBoot();
-    expect(state().marginFraction()).toBe(1);
+    expect(state().timeframeMinutes()).toBe(5);
 
-    state().onInstrumentChange('NSE_INDEX|Nifty 50');
-    expect(state().marginFraction()).toBe(0.2);
+    state().timeframeMinutes.set(1);
+    state().onStrategyChange('vwap-ema-trend');
+    expect(state().timeframeMinutes()).toBe(5);
   });
 
   it('moves off a strategy the new contract cannot run', () => {
@@ -199,7 +216,7 @@ describe('BacktestPageComponent', () => {
 
     state().onInstrumentChange('NSE_INDEX|Nifty 50');
     // Left alone, this would take zero trades and report a quiet month.
-    expect(state().strategyId()).toBe('opening-range-break');
+    expect(state().strategyId()).toBe('price-only');
   });
 
   /**
@@ -217,7 +234,7 @@ describe('BacktestPageComponent', () => {
   it('selects the first strategy and loads its defaults, so Run works at once', () => {
     flushBoot();
 
-    expect(state().strategyId()).toBe('opening-range-break');
+    expect(state().strategyId()).toBe('price-only');
     expect(state().params()).toEqual({ rangeMinutes: 15, targetR: 1.5 });
   });
 
@@ -226,7 +243,7 @@ describe('BacktestPageComponent', () => {
     state().setParam('targetR', 3);
     expect(state().params().targetR).toBe(3);
 
-    state().onStrategyChange('opening-range-break');
+    state().onStrategyChange('price-only');
     expect(state().params().targetR).toBe(1.5);
   });
 
@@ -266,6 +283,56 @@ describe('BacktestPageComponent', () => {
     http.expectOne((r) => r.url === `${base}/streamer/journal/datasets`).flush(DATASETS);
   });
 
+  /**
+   * A stock capture asks nothing about strikes and nothing about an underlying,
+   * because a stock has neither. The old single form asked both to fetch
+   * RELIANCE, and offered an underlying with no bearing on what it pulled.
+   */
+  it('captures a stock alone, with no derivative fields in the request', () => {
+    flushBoot();
+
+    state().setMode('EQUITY');
+    // The month-shaped windows are gone: a stock is here for its years.
+    expect(state().lookbackDays()).toBe(180);
+    expect(state().equity()).toBe('RELIANCE');
+
+    state().lookbackDays.set(730);
+    state().capture();
+
+    const request = http.expectOne(`${base}/streamer/journal/datasets`);
+    expect(request.request.body).toEqual({
+      equities: ['RELIANCE'],
+      lookbackDays: 730,
+    });
+
+    request.flush({ ...DATASETS[0], id: 12 });
+    http.expectOne((r) => r.url.endsWith('/instruments')).flush(INSTRUMENTS);
+    http.expectOne((r) => r.url === `${base}/streamer/journal/datasets`).flush(DATASETS);
+  });
+
+  /**
+   * The chart's picker asks for an expiry next, which a stock has no answer to,
+   * so the two lists stay apart all the way to the form.
+   */
+  it('keeps the stock list out of the underlying picker', () => {
+    flushBoot();
+    expect(state().underlyings()).toEqual(['BANKNIFTY', 'NIFTY']);
+    expect(state().equities()).toEqual(['RELIANCE', 'TCS']);
+  });
+
+  it('sends the timeframe the picker is on, not the declared default', () => {
+    flushBoot();
+
+    state().timeframeMinutes.set(15);
+    state().run();
+
+    const request = http.expectOne(`${base}/strategy/backtest/run`);
+    expect(request.request.body.timeframeMinutes).toBe(15);
+
+    request.flush({ id: 2, days: [], trades: [], metrics: null });
+    http.expectOne((r) => r.url === `${base}/strategy/backtest`).flush({ runs: [] });
+  });
+
   it('sends the parameters, the capital and the notes with a run', () => {
     flushBoot();
 
@@ -279,11 +346,10 @@ describe('BacktestPageComponent', () => {
       jasmine.objectContaining({
         datasetId: 3,
         instrumentKey: 'NSE_FO|CE-24100',
-        strategyId: 'opening-range-break',
+        strategyId: 'price-only',
         capital: 750_000,
         lotSize: 75,
-        marginFraction: 1,
-        exposureFraction: 0.25,
+        timeframeMinutes: 5,
         notes: 'widened the target',
         params: { rangeMinutes: 15, targetR: 2.5 },
       }),
@@ -381,6 +447,7 @@ describe('BacktestPageComponent', () => {
   });
 
   it('reports a catalogue failure without breaking the page', () => {
+    http.expectOne(`${base}/streamer/instruments/underlyings`).flush(SYMBOLS);
     http
       .expectOne(`${base}/strategy/catalogue`)
       .flush(

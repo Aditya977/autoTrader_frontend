@@ -90,7 +90,7 @@ function run(overrides: Partial<SimulationRunSnapshot> = {}): SimulationRunSnaps
         id: 'vwap-ema-trend',
         name: 'VWAP + EMA trend',
         description: 'buys strength',
-        instrument: 'OPTION',
+        requiresVolume: true,
         timeframeMinutes: 5,
         warmupBars: 26,
         paramSpecs: [],
