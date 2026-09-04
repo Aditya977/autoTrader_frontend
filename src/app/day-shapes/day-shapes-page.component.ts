@@ -2,6 +2,7 @@ import { Component, DestroyRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ChartStreamError } from '../chart-stream/chart-stream-api.service';
 import { NavTabsComponent } from '../shared/nav-tabs.component';
+import { SessionLookupComponent } from './session-lookup.component';
 import { DayShapesApiService } from './day-shapes-api.service';
 import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day-shapes.models';
 
@@ -26,7 +27,7 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
 @Component({
   selector: 'app-day-shapes-page',
   standalone: true,
-  imports: [NavTabsComponent],
+  imports: [NavTabsComponent, SessionLookupComponent],
   template: `
     <div class="page">
       <header class="head">
@@ -51,15 +52,24 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
       @if (models().length) {
         <div class="controls">
           <span class="lbl">Taxonomy</span>
-          @for (m of models(); track m.k) {
+          @for (kv of kValues(); track kv) {
+            <button type="button" class="seg" [class.on]="kv === selectedK()" (click)="select(kv)">
+              {{ kv }} categories
+              <small>stability {{ stabilityOf(kv).toFixed(2) }}</small>
+            </button>
+          }
+        </div>
+
+        <div class="controls">
+          <span class="lbl">Bar size</span>
+          @for (tf of timeframes; track tf) {
             <button
               type="button"
               class="seg"
-              [class.on]="m.k === selectedK()"
-              (click)="select(m.k)"
+              [class.on]="tf === selectedTf()"
+              (click)="selectTimeframe(tf)"
             >
-              {{ m.k }} categories
-              <small>stability {{ m.stability.toFixed(2) }}</small>
+              {{ tf }} min
             </button>
           }
         </div>
@@ -70,6 +80,14 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
           to tell apart and rest on thinner evidence. The stability figure on each button is the
           median adjusted Rand index over twenty refits — it is the price of the finer cut, shown
           rather than hidden.
+        </p>
+
+        <p class="explain">
+          <b>Why the bar size changes the answer.</b> A shape is not one thing.
+          <i>Efficiency</i> counts bar-to-bar travel, so a session that grinds upward while wobbling
+          every minute reads as chop at one minute and as a clean trend at fifteen — the wobble is
+          inside a bucket by then. Each bar size therefore has its own fitted taxonomy, and two that
+          disagree about the same morning are saying something neither says alone.
         </p>
       }
 
@@ -87,6 +105,8 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
           flat across every category. Nothing here cleared the pre-registered test for a tradeable
           edge.
         </p>
+
+        <app-session-lookup [k]="m.k" (matched)="expandedId.set($event)" />
 
         <div class="cards">
           @for (c of m.categories; track c.id) {
@@ -445,6 +465,8 @@ export class DayShapesPageComponent {
   protected readonly models = signal<DayShapeModelSummary[]>([]);
   protected readonly model = signal<DayShapeModel | null>(null);
   protected readonly selectedK = signal<number | null>(null);
+  protected readonly selectedTf = signal(15);
+  protected readonly timeframes = [1, 3, 5, 15];
   protected readonly expandedId = signal<number | null>(null);
   protected readonly loading = signal(true);
   protected readonly error = signal<string | null>(null);
@@ -461,11 +483,32 @@ export class DayShapesPageComponent {
         next: ({ models }) => {
           this.models.set(models);
           const preferred = models.find((m) => m.isDefault) ?? models[0];
-          if (preferred) this.select(preferred.k);
-          else this.loading.set(false);
+          if (preferred) {
+            this.selectedTf.set(preferred.timeframeMinutes);
+            this.select(preferred.k);
+          } else this.loading.set(false);
         },
         error: (e: unknown) => this.fail(e),
       });
+  }
+
+  /** Distinct category counts across the fitted models, ascending. */
+  protected kValues(): number[] {
+    return [...new Set(this.models().map((m) => m.k))].sort((a, b) => a - b);
+  }
+
+  /** The stability of a given (timeframe, k) pair, for the button's caption. */
+  protected stabilityOf(k: number): number {
+    return (
+      this.models().find((m) => m.k === k && m.timeframeMinutes === this.selectedTf())?.stability ??
+      0
+    );
+  }
+
+  protected selectTimeframe(tf: number): void {
+    this.selectedTf.set(tf);
+    const k = this.selectedK();
+    if (k !== null) this.select(k);
   }
 
   protected select(k: number): void {
@@ -474,7 +517,7 @@ export class DayShapesPageComponent {
     this.loading.set(true);
     this.error.set(null);
     this.api
-      .categories(k)
+      .categories(k, this.selectedTf())
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (model) => {

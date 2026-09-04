@@ -62,6 +62,8 @@ export interface CategoryProfile {
 
 export interface DayShapeModel {
   k: number;
+  /** Bar size the shape was measured on. Part of the model identity. */
+  timeframeMinutes: number;
   prefixMinutes: number;
   trajectoryPoints: number;
   columns: string[];
@@ -82,6 +84,7 @@ export interface DayShapeModel {
 /** One row of `GET /strategy/day-shapes`. */
 export interface DayShapeModelSummary {
   k: number;
+  timeframeMinutes: number;
   stability: number;
   prefixMinutes: number;
   sessions: number;
@@ -90,3 +93,74 @@ export interface DayShapeModelSummary {
   instruments: string[];
   isDefault: boolean;
 }
+
+/* -------------------------------------------------------------------------
+ * One session, looked up and classified
+ * ---------------------------------------------------------------------- */
+
+/** What the 90-minute prefix looked like — the numbers that chose a category. */
+export interface PrefixFeatures {
+  date: string;
+  bars: number;
+  netAtr: number;
+  upAtr: number;
+  downAtr: number;
+  efficiency: number;
+  closePosition: number;
+  gapAtr: number | null;
+  rangeRatio: number;
+  highAt: number;
+  lowAt: number;
+}
+
+/** What happened after 10:45. Every field prefixed, so nothing can collide. */
+export interface SessionOutcome {
+  fwdBars: number;
+  fwdNetAtr: number;
+  fwdRangeAtr: number;
+  fwdUpAtr: number;
+  fwdDownAtr: number;
+  fwdEfficiency: number;
+  fwdBarrierWin: number | null;
+}
+
+export interface Classification {
+  categoryId: number;
+  name: string;
+  distance: number;
+  runnerUpDistance: number;
+  /** Winner over runner-up. Near 1 means the label is close to arbitrary. */
+  margin: number;
+}
+
+export interface SessionShapeView {
+  symbol: string;
+  date: string;
+  timeframeMinutes: number;
+  k: number;
+  atrPrior: number;
+  bars: number;
+  shape: number[];
+  features: PrefixFeatures;
+  classification: Classification;
+  category: CategoryProfile;
+  outcome: SessionOutcome | null;
+  /** The same session read at every timeframe — the multi-timeframe view. */
+  acrossTimeframes: {
+    timeframeMinutes: number;
+    categoryId: number;
+    name: string;
+    efficiency: number;
+    margin: number;
+  }[];
+  insights: string[];
+}
+
+/** The endpoint answers with this when the question has no answer. */
+export interface SessionShapeError {
+  error: string;
+}
+
+export const isSessionShapeError = (
+  value: SessionShapeView | SessionShapeError,
+): value is SessionShapeError => 'error' in value;
