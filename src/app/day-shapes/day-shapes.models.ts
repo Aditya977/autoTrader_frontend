@@ -138,6 +138,18 @@ export interface SessionShapeView {
   date: string;
   timeframeMinutes: number;
   k: number;
+  /** Minutes of the morning the classification read. */
+  windowMinutes: number;
+  /** Bars the session held at this timeframe. */
+  sessionBars: number;
+  /**
+   * Whether the session had finished when it was read.
+   *
+   * A live session is classifiable — the window is complete — but its outcome
+   * is not yet knowable, and showing both without distinguishing them would
+   * present half a day of range as a full one.
+   */
+  complete: boolean;
   atrPrior: number;
   bars: number;
   shape: number[];

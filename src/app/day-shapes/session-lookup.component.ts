@@ -89,12 +89,17 @@ import { isSessionShapeError, type SessionShapeView } from './day-shapes.models'
             <p class="legend">
               <span class="key actual"></span> {{ v.date }}
               <span class="key typical"></span> typical “{{ v.category.name }}”
-              <span class="sep">·</span> dashed line is 10:45
+              <span class="sep">·</span> dashed line ends the {{ v.windowMinutes }}-minute window
             </p>
           </div>
 
           <div class="verdict">
-            <h3>{{ v.classification.name }}</h3>
+            <h3>
+              {{ v.classification.name }}
+              @if (!v.complete) {
+                <span class="badge">still running · {{ v.sessionBars }} bars</span>
+              }
+            </h3>
             <p class="conf">
               distance {{ v.classification.distance.toFixed(2) }} · runner-up
               {{ v.classification.runnerUpDistance.toFixed(2) }} ·
@@ -285,6 +290,17 @@ import { isSessionShapeError, type SessionShapeView } from './day-shapes.models'
     .conf .loose {
       color: #d9a441;
     }
+    .badge {
+      margin-left: 0.4rem;
+      font-size: 0.62rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      border: 1px solid #c9a227;
+      color: #d9a441;
+      vertical-align: middle;
+    }
     h4 {
       margin: 0.4rem 0 0;
       font-size: 0.68rem;
@@ -360,11 +376,31 @@ export class SessionLookupComponent {
   readonly matched = output<number>();
 
   protected readonly timeframes = [1, 3, 5, 15];
+  protected readonly windows = [
+    { minutes: 15, label: '15 min' },
+    { minutes: 30, label: '30 min' },
+    { minutes: 45, label: '45 min' },
+    { minutes: 60, label: '1 hour' },
+    { minutes: 90, label: '90 min (fitted)' },
+    { minutes: 120, label: '2 hours' },
+    { minutes: 180, label: '3 hours' },
+    { minutes: 375, label: 'Whole session' },
+  ];
   protected readonly symbols = signal<string[]>([]);
   protected readonly dates = signal<string[]>([]);
   protected readonly symbol = signal('');
   protected readonly date = signal('');
   protected readonly timeframe = signal(15);
+  /**
+   * How much of the morning to classify on.
+   *
+   * Ninety is the default and the only one the taxonomies were fitted at, so
+   * the reading is unchanged unless someone asks for something else. The rest
+   * are here because "what did the first half hour look like" is a real
+   * question — and when one is chosen the panel says the match is indicative,
+   * since the medoids were placed using ninety minutes of morning.
+   */
+  protected readonly window = signal(90);
   protected readonly view = signal<SessionShapeView | null>(null);
   protected readonly loading = signal(false);
   protected readonly message = signal<string | null>(null);
@@ -402,7 +438,7 @@ export class SessionLookupComponent {
     if (!symbol || !date) return;
     this.loading.set(true);
     this.message.set(null);
-    this.api.session(symbol, date, this.timeframe(), this.k()).subscribe({
+    this.api.session(symbol, date, this.timeframe(), this.k(), this.window()).subscribe({
       next: (result) => {
         this.loading.set(false);
         if (isSessionShapeError(result)) {
@@ -420,8 +456,9 @@ export class SessionLookupComponent {
     });
   }
 
+  /** Where the classifying window ends, as an x on the drawn session. */
   protected prefixX(v: SessionShapeView): number {
-    return Math.round((90 / 375) * 320);
+    return Math.round((v.windowMinutes / 375) * 320);
   }
 
   protected chartLabel(v: SessionShapeView): string {

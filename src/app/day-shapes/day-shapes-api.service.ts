@@ -81,12 +81,14 @@ export class DayShapesApiService {
     date: string,
     timeframe: number,
     k: number,
+    window = 90,
   ): Observable<SessionShapeView | SessionShapeError> {
     const query = new URLSearchParams({
       symbol,
       date,
       timeframe: String(timeframe),
       k: String(k),
+      window: String(window),
     });
     return this.http
       .get<SessionShapeView | SessionShapeError>(
