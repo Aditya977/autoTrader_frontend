@@ -2,6 +2,7 @@ import { Component, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DayShapesApiService } from './day-shapes-api.service';
 import { isSessionShapeError, type SessionShapeView } from './day-shapes.models';
+import { SimilarSessionsComponent } from './similar-sessions.component';
 
 /**
  * Look up one session and read what it was.
@@ -26,7 +27,7 @@ import { isSessionShapeError, type SessionShapeView } from './day-shapes.models'
 @Component({
   selector: 'app-session-lookup',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, SimilarSessionsComponent],
   template: `
     <section class="panel">
       <header>
@@ -92,6 +93,12 @@ import { isSessionShapeError, type SessionShapeView } from './day-shapes.models'
               <span class="sep">·</span> dashed line ends the {{ v.windowMinutes }}-minute window
             </p>
           </div>
+
+          <app-similar-sessions
+            [symbol]="v.symbol"
+            [date]="v.date"
+            [timeframe]="v.timeframeMinutes"
+          />
 
           <div class="verdict">
             <h3>

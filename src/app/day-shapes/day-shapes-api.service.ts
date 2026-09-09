@@ -8,8 +8,10 @@ import type { ApiErrorBody } from '../chart-stream/chart-stream.models';
 import type {
   DayShapeModel,
   DayShapeModelSummary,
+  SessionBarsView,
   SessionShapeError,
   SessionShapeView,
+  SimilarSessionsView,
 } from './day-shapes.models';
 
 /**
@@ -97,6 +99,67 @@ export class DayShapesApiService {
       .pipe(catchError(this.unwrap));
   }
 
+  /**
+   * Past sessions whose chart looks like this one, best match first.
+   *
+   * `matchCount` is the figure the panel shows collapsed and `matches` is
+   * what it reveals when expanded; the backend counts before it caps, so the
+   * two never disagree.
+   *
+   * `minScore` is a real gate. Below it the endpoint returns an empty list
+   * rather than the closest few, which is why the panel shows nothing at all
+   * when a day has no lookalikes instead of a weak best-of.
+   */
+  similar(
+    symbol: string,
+    date: string,
+    timeframe: number,
+    minScore: number,
+    window = 375,
+    limit = 30,
+  ): Observable<SimilarSessionsView | SessionShapeError> {
+    const query = new URLSearchParams({
+      symbol,
+      date,
+      timeframe: String(timeframe),
+      window: String(window),
+      minScore: String(minScore),
+      limit: String(limit),
+    });
+    return this.http
+      .get<SimilarSessionsView | SessionShapeError>(
+        `${this.base}/strategy/day-shapes/similar?${query.toString()}`,
+      )
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * One session's candles, each carrying its taxonomy label.
+   *
+   * The shape endpoints cannot serve this. A trajectory keeps twenty-five
+   * closes and discards every open, high and low, so it draws as a line and
+   * never as a candlestick.
+   *
+   * Note the timeframe list differs from the shape endpoints: this accepts
+   * 1, 5, 15, 60, 240 and 1440 minutes and **not** 3, because the taxonomy
+   * publishes a block per timeframe and three minutes is not one of them.
+   */
+  bars(
+    symbol: string,
+    date: string,
+    timeframe: number,
+  ): Observable<SessionBarsView | SessionShapeError> {
+    const query = new URLSearchParams({
+      symbol,
+      date,
+      timeframe: String(timeframe),
+    });
+    return this.http
+      .get<SessionBarsView | SessionShapeError>(
+        `${this.base}/strategy/day-shapes/bars?${query.toString()}`,
+      )
+      .pipe(catchError(this.unwrap));
+  }
   private readonly unwrap = (error: HttpErrorResponse) => {
     const body = error.error as ApiErrorBody | undefined;
     return throwError(
