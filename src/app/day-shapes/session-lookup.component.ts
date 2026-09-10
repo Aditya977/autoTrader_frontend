@@ -417,7 +417,18 @@ export class SessionLookupComponent {
       next: ({ symbols }) => {
         this.symbols.set(symbols);
         const first = symbols.find((s) => s === 'NIFTY') ?? symbols[0];
-        if (first) this.pickSymbol(first);
+        if (first) {
+          this.pickSymbol(first);
+          return;
+        }
+        // An empty list is a successful response, so it never reaches the
+        // error branch — and saying nothing leaves three dead dropdowns and
+        // no clue why. The lookup reads the journal’s captured 1-minute
+        // bars and nothing else, so "no instruments" always means "nothing
+        // captured yet" rather than a fault.
+        this.message.set(
+          'No instrument has enough captured history to shape yet. This lookup reads the journal’s 1-minute bars, and an instrument appears here once a capture has stored a few thousand of them.',
+        );
       },
       error: () => this.message.set('The instrument list could not be read.'),
     });
@@ -433,7 +444,12 @@ export class SessionLookupComponent {
         if (first) {
           this.date.set(first);
           this.load();
+          return;
         }
+        this.date.set('');
+        this.message.set(
+          `${symbol} has no captured session long enough to shape. A session needs at least a complete classifying window before it can be listed.`,
+        );
       },
       error: () => this.message.set('That instrument has no dates to show.'),
     });

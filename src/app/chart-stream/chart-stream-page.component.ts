@@ -10,6 +10,7 @@ import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.serv
 import { StrategyApiService } from '../strategy/strategy-api.service';
 import { SimulationSocketService } from '../strategy/simulation-socket.service';
 import { StrategyPanelComponent } from '../strategy/strategy-panel.component';
+import { SimilarSessionsComponent } from '../day-shapes/similar-sessions.component';
 import type {
   SimTrade,
   SimulationRunSnapshot,
@@ -167,7 +168,14 @@ interface ChartPanel {
 @Component({
   selector: 'app-chart-stream-page',
   standalone: true,
-  imports: [DatePipe, FormsModule, NavTabsComponent, ChartStreamComponent, StrategyPanelComponent],
+  imports: [
+    DatePipe,
+    FormsModule,
+    NavTabsComponent,
+    ChartStreamComponent,
+    StrategyPanelComponent,
+    SimilarSessionsComponent,
+  ],
   template: `
     <header class="topbar">
       <div class="brand">
@@ -427,6 +435,14 @@ interface ChartPanel {
             />
           }
         </section>
+
+        @if (underlying(); as sym) {
+          <app-similar-sessions
+            [symbol]="sym"
+            [date]="date()"
+            [timeframe]="similarTimeframe()"
+          />
+        }
       } @else {
         <section class="placeholder">
           <p>Nothing streaming yet.</p>
@@ -874,6 +890,22 @@ export class ChartStreamPageComponent {
       else bySession.set(book.sessionId, [...book.trades]);
     }
     return bySession;
+  });
+
+  /**
+   * The grid the lookalike search runs on.
+   *
+   * The chart also offers 30m, 1h and 1D, and none of those divides the
+   * 375-minute session into evenly spaced points, so none can carry a
+   * trajectory. They fall back to fifteen rather than being refused, because
+   * the panel is describing the *day* either way and the bar size the user
+   * happens to be looking at is not what the comparison is about.
+   */
+  protected readonly similarTimeframe = computed(() => {
+    const minutes = this.displaySeconds() / 60;
+    return minutes === 1 || minutes === 3 || minutes === 5 || minutes === 15
+      ? minutes
+      : 15;
   });
 
   protected readonly isOption = computed(() => this.kind() === 'OPTIONS');
