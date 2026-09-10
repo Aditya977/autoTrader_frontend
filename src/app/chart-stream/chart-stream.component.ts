@@ -32,6 +32,13 @@ import {
 } from 'lightweight-charts';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
 import { ChartStreamSocketService } from './chart-stream-socket.service';
+import { detectPatterns } from '../chart-patterns/engine/detect-patterns';
+import { LightweightChartsPatternOverlay } from '../chart-patterns/render/pattern-overlay';
+import { PATTERN_NAMES, type DetectedPattern } from '../chart-patterns/types';
+import { LiveTracker } from '../chart-patterns/engine/live-tracker';
+import { scanTimeframes, type TimeframeRow } from '../chart-patterns/engine/timeframe-scan';
+import { defaultPatternConfig } from '../chart-patterns/config';
+import { PREF, PreferencesService } from '../shared/preferences.service';
 import {
   CandleSeriesBuffer,
   toCandlestickData,
@@ -171,11 +178,86 @@ interface Readout {
           >
             {{ levelsLoading() ? 'S/R…' : 'S/R' }}
           </button>
+          <button
+            type="button"
+            class="ghost pat"
+            [class.on]="showPatterns()"
+            [attr.aria-pressed]="showPatterns()"
+            title="Chart patterns"
+            (click)="togglePatterns()"
+          >
+            Patterns
+            @if (patterns().length) {
+              <i class="badge">{{ patterns().length }}</i>
+            }
+          </button>
           <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
             Stop
           </button>
         </div>
       </header>
+
+      <div class="tf-panel">
+        <button
+          type="button"
+          class="tf-head"
+          [attr.aria-expanded]="showPatternTable()"
+          (click)="togglePatternTable()"
+        >
+          <span class="caret">{{ showPatternTable() ? '▾' : '▸' }}</span>
+          Patterns by timeframe
+          <span class="hint">the same series read at every bar size</span>
+        </button>
+
+        @if (showPatternTable()) {
+          <table class="tf-table">
+            <thead>
+              <tr>
+                <th>Bar size</th>
+                <th>Bars</th>
+                <th>Pattern</th>
+                <th>Direction</th>
+                <th>Status</th>
+                <th class="num">Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (row of timeframeRows(); track row.seconds) {
+                @if (row.patterns.length) {
+                  @for (p of row.patterns; track p.id) {
+                    <tr [class.current]="row.seconds === displaySeconds()">
+                      <td class="tf">{{ row.label }}</td>
+                      <td class="num">{{ row.bars }}</td>
+                      <td>{{ nameOf(p) }}</td>
+                      <td class="dir" [class]="p.direction">{{ p.direction }}</td>
+                      <td class="st" [class]="p.status">{{ p.status }}</td>
+                      <td class="num">
+                        <span class="meter">
+                          <span class="fill" [style.width.%]="p.confidence * 100"></span>
+                        </span>
+                        {{ (p.confidence * 100).toFixed(0) }}%
+                      </td>
+                    </tr>
+                  }
+                } @else {
+                  <tr class="empty" [class.current]="row.seconds === displaySeconds()">
+                    <td class="tf">{{ row.label }}</td>
+                    <td class="num">{{ row.bars }}</td>
+                    <td colspan="4">
+                      {{ row.bars < 30 ? 'not enough bars yet' : 'nothing forming' }}
+                    </td>
+                  </tr>
+                }
+              }
+            </tbody>
+          </table>
+          <p class="tf-note">
+            Confidence is how well the shape fits its own definition, not a probability that it
+            plays out. The forming bar is excluded at every size, so a reading never changes under a
+            bar that had not closed.
+          </p>
+        }
+      </div>
 
       @if (readout(); as r) {
         <div class="readout" [class.live]="!r.hovering">
@@ -455,6 +537,112 @@ interface Readout {
       color: var(--accent);
     }
 
+    .ghost.pat.on {
+      color: var(--accent);
+      border-color: var(--accent-dim);
+    }
+    .ghost.pat .badge {
+      font-style: normal;
+      margin-left: 0.3rem;
+      font-size: 0.62rem;
+      opacity: 0.8;
+    }
+
+    .tf-panel {
+      border-top: 1px solid var(--border);
+    }
+    .tf-head {
+      display: flex;
+      align-items: baseline;
+      gap: 0.4rem;
+      width: 100%;
+      padding: 0.4rem 0.6rem;
+      background: none;
+      border: 0;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.74rem;
+      text-align: left;
+      cursor: pointer;
+    }
+    .tf-head .caret {
+      color: var(--text-muted);
+      width: 0.7rem;
+    }
+    .tf-head .hint {
+      color: var(--text-muted);
+      font-size: 0.66rem;
+    }
+    .tf-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.7rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .tf-table th {
+      text-align: left;
+      font-weight: 500;
+      color: var(--text-muted);
+      padding: 0.2rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tf-table td {
+      padding: 0.22rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .tf-table .num {
+      text-align: right;
+      white-space: nowrap;
+    }
+    .tf-table tr.current td {
+      background: var(--surface-3, rgba(255, 255, 255, 0.05));
+    }
+    .tf-table tr.empty td {
+      color: var(--text-faint);
+    }
+    .tf-table .tf {
+      color: var(--text-muted);
+    }
+    .tf-table .dir.bullish {
+      color: var(--up);
+    }
+    .tf-table .dir.bearish {
+      color: var(--down);
+    }
+    .tf-table .dir.neutral {
+      color: var(--text-muted);
+    }
+    .tf-table .st.forming {
+      color: var(--warn);
+    }
+    .tf-table .st.confirmed {
+      color: var(--text);
+    }
+    .tf-table .meter {
+      display: inline-block;
+      width: 34px;
+      height: 4px;
+      border-radius: 2px;
+      margin-right: 0.35rem;
+      background: var(--surface-3, rgba(255, 255, 255, 0.08));
+      overflow: hidden;
+      vertical-align: middle;
+    }
+    .tf-table .meter .fill {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      opacity: 0.75;
+    }
+    .tf-note {
+      margin: 0;
+      padding: 0.4rem 0.6rem 0.5rem;
+      font-size: 0.66rem;
+      line-height: 1.5;
+      color: var(--text-muted);
+      max-width: 80ch;
+    }
+
     .levels {
       display: flex;
       flex-wrap: wrap;
@@ -638,6 +826,26 @@ export class ChartStreamComponent {
   private readonly buffer = new CandleSeriesBuffer();
 
   /**
+   * The pattern overlay, and what it is currently showing.
+   *
+   * Kept by id rather than as a list so a recomputation can be diffed
+   * against it: a pattern that kept its id is updated in place, and only one
+   * that genuinely stopped being detected is removed. Republishing the whole
+   * set every pass would redraw identical lines and read as a flicker.
+   */
+  private readonly overlay = new LightweightChartsPatternOverlay();
+  private readonly tracker = new LiveTracker();
+  private readonly prefs = inject(PreferencesService);
+
+  /** What the toolbar counts. */
+  readonly patterns = signal<DetectedPattern[]>([]);
+  /** One row per bar size — which pattern is forming where. */
+  readonly timeframeRows = signal<TimeframeRow[]>([]);
+  /** Persisted per browser, so the chart opens the way it was left. */
+  readonly showPatterns = signal(true);
+  readonly showPatternTable = signal(false);
+
+  /**
    * The session socket currently feeding {@link buffer}.
    *
    * Held so the *previous* one can be dropped when this panel moves to another
@@ -816,6 +1024,12 @@ export class ChartStreamComponent {
         scaleMargins: { top: 0.08, bottom: 0.24 },
       });
       this.markers = createSeriesMarkers(this.candles, []);
+      // Attached to the candle series, so the overlay is converted through
+      // the same price scale and coordinate space as the bars themselves.
+      this.overlay.attach(this.candles);
+      const remembered = this.prefs.get(PREF.showPatterns, true);
+      this.showPatterns.set(remembered);
+      this.overlay.setVisible(remembered);
       this.chart.subscribeCrosshairMove(this.onCrosshair);
       // Levels and trades can both arrive before the canvas exists — a session
       // started with `levels` publishes its first set within milliseconds of
@@ -857,7 +1071,12 @@ export class ChartStreamComponent {
     effect(() => {
       this.displaySeconds();
       untracked(() => {
+        // A new bar size is a different series with different pivots, and its
+        // newest closed bar may be one the tracker has already seen — so the
+        // scan has to be forced rather than waiting for the next close.
+        this.tracker.reset();
         this.redraw({ refit: true });
+        this.refreshPatterns({ force: true });
         // The bars are free to re-bucket; the levels are not. They were found
         // on a stated interval server-side, so the set on screen now describes
         // a series that is no longer drawn — re-ask for the new one.
@@ -866,6 +1085,7 @@ export class ChartStreamComponent {
     });
 
     this.destroyRef.onDestroy(() => {
+      this.overlay.destroy();
       this.chart?.unsubscribeCrosshairMove(this.onCrosshair);
       this.chart?.remove();
       this.chart = undefined;
@@ -933,6 +1153,9 @@ export class ChartStreamComponent {
     // session's lines onto a different instrument would draw confident,
     // completely wrong numbers.
     this.clearLevels();
+    // Patterns belong to the series that produced them. Carrying the last
+    // instrument’s shapes onto a new one would draw confident nonsense.
+    this.clearPatterns();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
     this.showLevels.set(request?.levels !== undefined);
@@ -1167,6 +1390,77 @@ export class ChartStreamComponent {
     // `setData` keeps the current visible range, so a growing replay would
     // march off the right edge without this.
     if (options.refit) this.chart?.timeScale().fitContent();
+
+    // After the bars, never before: detection reads exactly the series that
+    // was just drawn, so an overlay can never describe bars that are not on
+    // screen. Redraws are already batched to a microtask, so a replay that
+    // delivers a whole day in one burst detects once rather than per bar.
+    this.refreshPatterns();
+  }
+
+  /**
+   * Re-runs detection over the drawn series and syncs the overlay.
+   *
+   * Diffed by id rather than republished wholesale, which is what keeps the
+   * overlay steady: a pattern that survived the pass is only repainted if
+   * something about it actually changed.
+   */
+  private refreshPatterns(options: { force?: boolean } = {}): void {
+    // Never per tick. A redraw happens on every candle event, including the
+    // repeated rewrites of the bar still forming; only the appearance of a
+    // *closed* bar is worth a scan. `force` is for the cases where the
+    // series itself changed underneath us — a new timeframe, or the toggle
+    // being switched back on — where the last closed bar is unchanged but
+    // the answer is not.
+    if (!options.force && !this.tracker.hasBarClosed(this.drawn)) return;
+
+    const scanned = this.tracker.barsToScan(this.drawn, defaultPatternConfig.liveWindowBars);
+    const { patterns } = detectPatterns(scanned);
+    const { added, updated, removedIds } = this.tracker.diff(patterns);
+
+    for (const id of removedIds) this.overlay.remove(id);
+    for (const pattern of added) this.overlay.upsert(pattern);
+    for (const pattern of updated) this.overlay.upsert(pattern);
+
+    this.patterns.set(patterns);
+    if (this.showPatternTable()) this.refreshTimeframeTable();
+  }
+
+  /**
+   * The same series read at every bar size.
+   *
+   * Only while the table is open. Six extra passes are cheap — the buffer
+   * resamples data already in memory — but they are not free, and a panel
+   * nobody has expanded should not cost anything at all.
+   */
+  private refreshTimeframeTable(): void {
+    this.timeframeRows.set(scanTimeframes((seconds) => this.buffer.resampled(seconds)));
+  }
+
+  /** The pattern’s display name, without the direction and status. */
+  protected nameOf(pattern: DetectedPattern): string {
+    return PATTERN_NAMES[pattern.type];
+  }
+
+  /** Shows or hides the overlay, and remembers which. */
+  togglePatterns(): void {
+    const next = !this.showPatterns();
+    this.showPatterns.set(next);
+    this.overlay.setVisible(next);
+    this.prefs.set(PREF.showPatterns, next);
+  }
+
+  togglePatternTable(): void {
+    const next = !this.showPatternTable();
+    this.showPatternTable.set(next);
+    if (next) this.refreshTimeframeTable();
+  }
+
+  private clearPatterns(): void {
+    this.overlay.clear();
+    this.tracker.reset();
+    this.patterns.set([]);
+    this.timeframeRows.set([]);
   }
 
   /**
