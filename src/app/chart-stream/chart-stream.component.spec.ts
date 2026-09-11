@@ -72,6 +72,7 @@ const candle = (timestamp: number, close: number, volume = 1200): ChartStreamEve
   close,
   volume,
   openInterest: 45_000,
+  vwap: null,
   isSyntheticGap: false,
 });
 

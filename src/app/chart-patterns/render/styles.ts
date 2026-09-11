@@ -32,9 +32,9 @@ export interface PatternPalette {
 
 export function readPalette(): PatternPalette {
   return {
-    bullish: token('--up', '#26a17b'),
-    bearish: token('--down', '#ef5350'),
-    neutral: token('--text-muted', '#8b9bad'),
+    bullish: token('--pattern-bullish', '#22d3ee'),
+    bearish: token('--pattern-bearish', '#c084fc'),
+    neutral: token('--pattern-neutral', '#8b9bad'),
     level: token('--text-muted', '#8b9bad'),
     labelText: token('--text', '#e6edf3'),
     labelPlate: token('--surface-2', '#161f2a'),

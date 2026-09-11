@@ -3,13 +3,7 @@ export type ChartSessionMode = 'LIVE' | 'TEST';
 export type ChartSessionStatus = 'STARTING' | 'RUNNING' | 'COMPLETED' | 'STOPPED' | 'ERROR';
 
 export type ChartInterval =
-  | '1minute'
-  | '3minute'
-  | '5minute'
-  | '15minute'
-  | '30minute'
-  | '1hour'
-  | '1day';
+  '1minute' | '3minute' | '5minute' | '15minute' | '30minute' | '1hour' | '1day';
 
 export type InstrumentType = 'INDEX' | 'EQUITY' | 'FUTURE' | 'CE' | 'PE';
 
@@ -227,6 +221,16 @@ export interface ChartCandleEvent {
   close: number;
   volume: number;
   openInterest: number | null;
+  /**
+   * Session VWAP as of this bar's close, or `null` where there is none.
+   *
+   * Cumulative from the session open and reset each trading day, so a
+   * prior-day history bar carries that day's average rather than this one's.
+   * `null` until a bar with volume has closed — and therefore `null` for every
+   * bar of an index, which reports no volume at all. Draw nothing for a
+   * `null`; do not carry the previous value forward.
+   */
+  vwap: number | null;
   isSyntheticGap: boolean;
 }
 

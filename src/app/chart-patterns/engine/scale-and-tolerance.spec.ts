@@ -107,13 +107,25 @@ describe('equality measured against the shape, not against ATR alone', () => {
 
   const candles = build(UNEVEN_TOP, 0.3);
 
+  /**
+   * Every call here states its own confidence floor.
+   *
+   * This block is about the equality rule and nothing else, and the shipped
+   * floor is 0.75 — above what this deliberately imperfect shape scores
+   * (65.5%). Left on the default, the positive case would fail for a reason
+   * it does not test, and worse, both negatives would *pass* for one: they
+   * would be filtered on confidence rather than refused on tolerance, and
+   * would go on passing if the tolerance rule were deleted outright.
+   */
+  const noFloor = { minConfidence: 0 } as const;
+
   it('accepts peaks that differ by a little of the pattern’s own height', () => {
-    const top = detectPatterns(candles).patterns.find((p) => p.type === 'double_top');
+    const top = detectPatterns(candles, noFloor).patterns.find((p) => p.type === 'double_top');
     expect(top).toBeDefined();
   });
 
   it('rejects them again once the height term is switched off', () => {
-    const { patterns } = detectPatterns(candles, { equalityHeightPct: 0 });
+    const { patterns } = detectPatterns(candles, { ...noFloor, equalityHeightPct: 0 });
     expect(patterns.some((p) => p.type === 'double_top')).toBe(false);
   });
 
@@ -129,7 +141,7 @@ describe('equality measured against the shape, not against ATR alone', () => {
       { at: 140, price: 119 },
       { at: 190, price: 94 },
     ];
-    const { patterns } = detectPatterns(build(wrong, 0.3));
+    const { patterns } = detectPatterns(build(wrong, 0.3), noFloor);
     expect(patterns.some((p) => p.type === 'double_top')).toBe(false);
   });
 });

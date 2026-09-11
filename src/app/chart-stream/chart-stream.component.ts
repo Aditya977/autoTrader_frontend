@@ -14,6 +14,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import type { Subscription } from 'rxjs';
 import {
   CandlestickSeries,
+  LineSeries,
   ColorType,
   CrosshairMode,
   HistogramSeries,
@@ -39,6 +40,9 @@ import { LiveTracker } from '../chart-patterns/engine/live-tracker';
 import { scanTimeframes, type TimeframeRow } from '../chart-patterns/engine/timeframe-scan';
 import { defaultPatternConfig } from '../chart-patterns/config';
 import { PREF, PreferencesService } from '../shared/preferences.service';
+import { PatternTimeframeTableComponent } from '../chart-patterns/ui/pattern-timeframe-table.component';
+import { EMA_INDICATORS, ema, emaColor } from '../chart-indicators/ema';
+import { VWAP_COLOR, vwapLine } from '../chart-indicators/vwap';
 import {
   CandleSeriesBuffer,
   toCandlestickData,
@@ -149,6 +153,7 @@ interface Readout {
 @Component({
   selector: 'app-chart-stream',
   standalone: true,
+  imports: [PatternTimeframeTableComponent],
   template: `
     <section class="panel" [class.dimmed]="finished()">
       <header class="head">
@@ -191,6 +196,53 @@ interface Readout {
               <i class="badge">{{ patterns().length }}</i>
             }
           </button>
+          <div class="ind">
+            <button
+              type="button"
+              class="ghost"
+              [class.on]="indicatorCount() > 0"
+              [attr.aria-expanded]="showIndicators()"
+              aria-haspopup="true"
+              title="Indicators"
+              (click)="toggleIndicators()"
+            >
+              Indicators
+              @if (indicatorCount()) {
+                <i class="badge">{{ indicatorCount() }}</i>
+              }
+            </button>
+
+            @if (showIndicators()) {
+              <div class="menu" role="group" aria-label="Indicators">
+                <p class="menu-head">Moving averages</p>
+                @for (choice of emaChoices; track choice.period) {
+                  <label class="opt">
+                    <input
+                      type="checkbox"
+                      [checked]="isEmaOn(choice.period)"
+                      (change)="toggleEma(choice.period)"
+                    />
+                    <span class="swatch" [style.background]="choice.color"></span>
+                    <span class="opt-name">EMA {{ choice.period }}</span>
+                  </label>
+                }
+                <p class="menu-head">Volume</p>
+                <label class="opt">
+                  <input type="checkbox" [checked]="showVwap()" (change)="toggleVwap()" />
+                  <span class="swatch" [style.background]="vwapColor"></span>
+                  <span class="opt-name">VWAP</span>
+                </label>
+                <button
+                  type="button"
+                  class="menu-clear"
+                  [disabled]="!indicatorCount()"
+                  (click)="clearIndicators()"
+                >
+                  Clear
+                </button>
+              </div>
+            }
+          </div>
           <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
             Stop
           </button>
@@ -210,51 +262,14 @@ interface Readout {
         </button>
 
         @if (showPatternTable()) {
-          <table class="tf-table">
-            <thead>
-              <tr>
-                <th>Bar size</th>
-                <th>Bars</th>
-                <th>Pattern</th>
-                <th>Direction</th>
-                <th>Status</th>
-                <th class="num">Confidence</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (row of timeframeRows(); track row.seconds) {
-                @if (row.patterns.length) {
-                  @for (p of row.patterns; track p.id) {
-                    <tr [class.current]="row.seconds === displaySeconds()">
-                      <td class="tf">{{ row.label }}</td>
-                      <td class="num">{{ row.bars }}</td>
-                      <td>{{ nameOf(p) }}</td>
-                      <td class="dir" [class]="p.direction">{{ p.direction }}</td>
-                      <td class="st" [class]="p.status">{{ p.status }}</td>
-                      <td class="num">
-                        <span class="meter">
-                          <span class="fill" [style.width.%]="p.confidence * 100"></span>
-                        </span>
-                        {{ (p.confidence * 100).toFixed(0) }}%
-                      </td>
-                    </tr>
-                  }
-                } @else {
-                  <tr class="empty" [class.current]="row.seconds === displaySeconds()">
-                    <td class="tf">{{ row.label }}</td>
-                    <td class="num">{{ row.bars }}</td>
-                    <td colspan="4">
-                      {{ row.bars < 30 ? 'not enough bars yet' : 'nothing forming' }}
-                    </td>
-                  </tr>
-                }
-              }
-            </tbody>
-          </table>
+          <app-pattern-timeframe-table
+            [timeframes]="timeframeRows()"
+            [currentSeconds]="displaySeconds()"
+          />
           <p class="tf-note">
-            Confidence is how well the shape fits its own definition, not a probability that it
-            plays out. The forming bar is excluded at every size, so a reading never changes under a
-            bar that had not closed.
+            Only shapes scoring above 75% are shown, here and on the chart. Confidence is how well a
+            shape fits its own definition, not a probability that it plays out. The forming bar is
+            excluded at every size, so a reading never changes under a bar that had not closed.
           </p>
         }
       </div>
@@ -548,6 +563,99 @@ interface Readout {
       opacity: 0.8;
     }
 
+    /* The indicators menu is positioned against this, so the button and the
+       panel move together when the header reflows. */
+    .ind {
+      position: relative;
+    }
+
+    .menu {
+      position: absolute;
+      top: calc(100% + 0.3rem);
+      right: 0;
+      z-index: 20;
+      min-width: 11rem;
+      padding: 0.4rem;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+      display: flex;
+      flex-direction: column;
+      gap: 0.1rem;
+    }
+
+    .menu-head {
+      margin: 0 0 0.2rem;
+      padding: 0 0.3rem;
+      font-size: 0.6rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-muted);
+    }
+
+    .opt {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.25rem 0.3rem;
+      border-radius: 4px;
+      font-size: 0.74rem;
+      cursor: pointer;
+    }
+
+    .opt:hover {
+      background: var(--surface-3, rgba(255, 255, 255, 0.05));
+    }
+
+    .opt input {
+      margin: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    /* The colour the line is actually drawn in, so the menu doubles as the
+       legend and no separate key is needed. */
+    .swatch {
+      width: 14px;
+      height: 2px;
+      border-radius: 1px;
+      flex: none;
+    }
+
+    .opt-name {
+      font-variant-numeric: tabular-nums;
+    }
+
+    .menu-clear {
+      margin-top: 0.25rem;
+      padding: 0.28rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: none;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 0.68rem;
+      cursor: pointer;
+    }
+
+    .menu-clear:hover:not(:disabled) {
+      color: var(--text);
+      border-color: var(--border-strong);
+    }
+
+    .menu-clear:disabled {
+      opacity: 0.4;
+      cursor: default;
+    }
+
+    .ghost .badge {
+      font-style: normal;
+      margin-left: 0.3rem;
+      font-size: 0.62rem;
+      opacity: 0.8;
+    }
+
     .tf-panel {
       border-top: 1px solid var(--border);
     }
@@ -572,67 +680,6 @@ interface Readout {
     .tf-head .hint {
       color: var(--text-muted);
       font-size: 0.66rem;
-    }
-    .tf-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.7rem;
-      font-variant-numeric: tabular-nums;
-    }
-    .tf-table th {
-      text-align: left;
-      font-weight: 500;
-      color: var(--text-muted);
-      padding: 0.2rem 0.6rem;
-      border-bottom: 1px solid var(--border);
-    }
-    .tf-table td {
-      padding: 0.22rem 0.6rem;
-      border-bottom: 1px solid var(--border);
-    }
-    .tf-table .num {
-      text-align: right;
-      white-space: nowrap;
-    }
-    .tf-table tr.current td {
-      background: var(--surface-3, rgba(255, 255, 255, 0.05));
-    }
-    .tf-table tr.empty td {
-      color: var(--text-faint);
-    }
-    .tf-table .tf {
-      color: var(--text-muted);
-    }
-    .tf-table .dir.bullish {
-      color: var(--up);
-    }
-    .tf-table .dir.bearish {
-      color: var(--down);
-    }
-    .tf-table .dir.neutral {
-      color: var(--text-muted);
-    }
-    .tf-table .st.forming {
-      color: var(--warn);
-    }
-    .tf-table .st.confirmed {
-      color: var(--text);
-    }
-    .tf-table .meter {
-      display: inline-block;
-      width: 34px;
-      height: 4px;
-      border-radius: 2px;
-      margin-right: 0.35rem;
-      background: var(--surface-3, rgba(255, 255, 255, 0.08));
-      overflow: hidden;
-      vertical-align: middle;
-    }
-    .tf-table .meter .fill {
-      display: block;
-      height: 100%;
-      background: var(--accent);
-      opacity: 0.75;
     }
     .tf-note {
       margin: 0;
@@ -845,6 +892,18 @@ export class ChartStreamComponent {
   readonly showPatterns = signal(true);
   readonly showPatternTable = signal(false);
 
+  /* --- indicators ---------------------------------------------------- */
+  protected readonly emaChoices = EMA_INDICATORS;
+  /** Periods currently drawn. Persisted, like the pattern toggle. */
+  readonly selectedEmas = signal<readonly number[]>([]);
+  readonly showIndicators = signal(false);
+  /** One line series per selected period, keyed so it can be removed. */
+  private readonly emaSeries = new Map<number, ISeriesApi<'Line'>>();
+  /** Whether the session VWAP is drawn. Persisted, like the averages. */
+  readonly showVwap = signal(false);
+  /** The VWAP line, created only while it is on. */
+  private vwapSeries?: ISeriesApi<'Line'>;
+
   /**
    * The session socket currently feeding {@link buffer}.
    *
@@ -1030,6 +1089,17 @@ export class ChartStreamComponent {
       const remembered = this.prefs.get(PREF.showPatterns, true);
       this.showPatterns.set(remembered);
       this.overlay.setVisible(remembered);
+
+      // Restored before the first redraw, so a chart opens with the averages
+      // it was left with rather than drawing them a frame later.
+      const periods = this.prefs.get<readonly number[]>(PREF.emaPeriods, []);
+      const known = periods.filter((n) => EMA_INDICATORS.some((i) => i.period === n));
+      this.selectedEmas.set(known);
+      for (const period of known) this.addEmaSeries(period);
+      if (this.prefs.get(PREF.showVwap, false)) {
+        this.showVwap.set(true);
+        this.addVwapSeries();
+      }
       this.chart.subscribeCrosshairMove(this.onCrosshair);
       // Levels and trades can both arrive before the canvas exists — a session
       // started with `levels` publishes its first set within milliseconds of
@@ -1085,6 +1155,8 @@ export class ChartStreamComponent {
     });
 
     this.destroyRef.onDestroy(() => {
+      this.emaSeries.clear();
+      this.vwapSeries = undefined;
       this.overlay.destroy();
       this.chart?.unsubscribeCrosshairMove(this.onCrosshair);
       this.chart?.remove();
@@ -1396,6 +1468,8 @@ export class ChartStreamComponent {
     // screen. Redraws are already batched to a microtask, so a replay that
     // delivers a whole day in one burst detects once rather than per bar.
     this.refreshPatterns();
+    this.drawEmas();
+    this.drawVwap();
   }
 
   /**
@@ -1440,6 +1514,157 @@ export class ChartStreamComponent {
   /** The pattern’s display name, without the direction and status. */
   protected nameOf(pattern: DetectedPattern): string {
     return PATTERN_NAMES[pattern.type];
+  }
+
+  /* --- indicators ---------------------------------------------------- */
+
+  protected toggleIndicators(): void {
+    this.showIndicators.update((open) => !open);
+  }
+
+  protected isEmaOn(period: number): boolean {
+    return this.selectedEmas().includes(period);
+  }
+
+  /**
+   * Adds or removes one average.
+   *
+   * The series is created and destroyed rather than hidden, so an unchecked
+   * average costs nothing — no data held, no line in the price scale’s
+   * autoscale, and no stale points to redraw when the timeframe changes.
+   */
+  protected toggleEma(period: number): void {
+    const on = this.isEmaOn(period);
+    this.selectedEmas.update((current) =>
+      on ? current.filter((n) => n !== period) : [...current, period].sort((a, b) => a - b),
+    );
+    if (on) this.removeEmaSeries(period);
+    else {
+      this.addEmaSeries(period);
+      this.drawEmas();
+    }
+    this.rememberEmas();
+  }
+
+  /**
+   * Everything the menu currently draws — averages plus VWAP.
+   *
+   * One count rather than two, because the button it sits on is one button: a
+   * badge reading 3 while a fourth line is on screen is worse than no badge.
+   */
+  protected readonly indicatorCount = computed(
+    () => this.selectedEmas().length + (this.showVwap() ? 1 : 0),
+  );
+
+  protected readonly vwapColor = VWAP_COLOR;
+
+  /**
+   * Shows or hides the session VWAP.
+   *
+   * The series is created and destroyed rather than hidden, for the same
+   * reason the averages are: an indicator that is off holds no data and takes
+   * no part in the price scale's autoscale.
+   */
+  protected toggleVwap(): void {
+    const next = !this.showVwap();
+    this.showVwap.set(next);
+    if (next) {
+      this.addVwapSeries();
+      this.drawVwap();
+    } else this.removeVwapSeries();
+    this.prefs.set(PREF.showVwap, next);
+  }
+
+  protected clearIndicators(): void {
+    this.clearEmas();
+    if (this.showVwap()) this.toggleVwap();
+  }
+
+  protected clearEmas(): void {
+    for (const period of this.selectedEmas()) this.removeEmaSeries(period);
+    this.selectedEmas.set([]);
+    this.rememberEmas();
+  }
+
+  private rememberEmas(): void {
+    this.prefs.set(PREF.emaPeriods, this.selectedEmas());
+  }
+
+  private addEmaSeries(period: number): void {
+    if (!this.chart || this.emaSeries.has(period)) return;
+    const series = this.chart.addSeries(LineSeries, {
+      color: emaColor(period),
+      lineWidth: 1,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      // Out of the crosshair’s way: the readout above the chart already
+      // names the bar, and six averages each claiming a price-scale tag
+      // would bury the price itself.
+      crosshairMarkerVisible: false,
+    });
+    this.emaSeries.set(period, series);
+  }
+
+  private removeEmaSeries(period: number): void {
+    const series = this.emaSeries.get(period);
+    if (!series) return;
+    this.chart?.removeSeries(series);
+    this.emaSeries.delete(period);
+  }
+
+  /**
+   * Recomputes every drawn average from the bars on screen.
+   *
+   * From `drawn`, which is the resampled series, so an average follows the
+   * timeframe: a 21-period EMA on a five-minute chart is twenty-one
+   * five-minute bars, which is what a reader means by it. Deriving it from
+   * the one-minute buffer instead would draw a line nobody asked for.
+   */
+  private drawEmas(): void {
+    if (!this.emaSeries.size) return;
+    for (const [period, series] of this.emaSeries) {
+      series.setData(
+        ema(this.drawn, period).map((point) => ({
+          time: point.time as UTCTimestamp,
+          value: point.value,
+        })),
+      );
+    }
+  }
+
+  private addVwapSeries(): void {
+    if (!this.chart || this.vwapSeries) return;
+    this.vwapSeries = this.chart.addSeries(LineSeries, {
+      color: VWAP_COLOR,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+    });
+  }
+
+  private removeVwapSeries(): void {
+    if (!this.vwapSeries) return;
+    this.chart?.removeSeries(this.vwapSeries);
+    this.vwapSeries = undefined;
+  }
+
+  /**
+   * Redraws the VWAP from the bars on screen.
+   *
+   * Unlike the averages this is not a calculation. Every bar already carries
+   * the backend's own cumulative figure and this only lifts it onto a line.
+   * An instrument that reports no volume publishes no VWAP, so the line comes
+   * out empty rather than flat — see `chart-indicators/vwap.ts`.
+   */
+  private drawVwap(): void {
+    if (!this.vwapSeries) return;
+    this.vwapSeries.setData(
+      vwapLine(this.drawn).map((point) => ({
+        time: point.time as UTCTimestamp,
+        value: point.value,
+      })),
+    );
   }
 
   /** Shows or hides the overlay, and remembers which. */

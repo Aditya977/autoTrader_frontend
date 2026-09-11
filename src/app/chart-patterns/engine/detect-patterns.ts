@@ -73,7 +73,7 @@ export function detectPatterns(
     );
   }
 
-  const kept = found.filter((p) => p.confidence >= config.minConfidence);
+  const kept = found.filter((p) => p.confidence > config.minConfidence);
 
   const patterns = rank(deduplicate(kept)).slice(0, config.maxRenderedPatterns);
   // The finest pass, for anyone drawing the swing points themselves.

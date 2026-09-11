@@ -76,7 +76,19 @@ export interface PatternConfig {
   /** Bars a pattern must span, and may not exceed. */
   minBars: number;
   maxBars: number;
-  /** Patterns scoring below this are dropped before rendering. */
+  /**
+   * Confidence a pattern must **exceed** to be published at all.
+   *
+   * Strictly exceed, not merely reach: a shape sitting exactly on the line is
+   * excluded. That is the rule as specified — above the figure shows, at or
+   * below it does not — and the difference only ever matters for a pattern
+   * landing precisely on it, which is exactly the case a reader would find
+   * arbitrary if it were decided the other way.
+   *
+   * Applied inside the engine rather than at each drawing surface, so the
+   * chart overlay and the per-timeframe table cannot disagree about what
+   * counts as good enough to show.
+   */
   minConfidence: number;
   /** Bars the live pass re-examines on each candle close. */
   liveWindowBars: number;
@@ -111,7 +123,7 @@ export const defaultPatternConfig: PatternConfig = {
   flatSlope: 0.03,
   minBars: 8,
   maxBars: 300,
-  minConfidence: 0.5,
+  minConfidence: 0.75,
   liveWindowBars: 500,
   maxRenderedPatterns: 20,
   showForming: true,

@@ -3,18 +3,20 @@ import type { Candle, DetectedPattern } from '../types';
 import { detectPatterns } from './detect-patterns';
 
 /** The bar sizes the table reports on, and what to call each one. */
-export const SCAN_TIMEFRAMES: readonly { seconds: number; label: string }[] = [
-  { seconds: 60, label: '1m' },
-  { seconds: 180, label: '3m' },
-  { seconds: 300, label: '5m' },
-  { seconds: 900, label: '15m' },
-  { seconds: 1800, label: '30m' },
-  { seconds: 3600, label: '1h' },
+export const SCAN_TIMEFRAMES: readonly { seconds: number; label: string; name: string }[] = [
+  { seconds: 60, label: '1m', name: '1 minute' },
+  { seconds: 300, label: '5m', name: '5 minutes' },
+  { seconds: 1800, label: '30m', name: '30 minutes' },
+  { seconds: 3600, label: '1h', name: '1 hour' },
+  { seconds: 86400, label: '1d', name: '1 day' },
 ];
 
 export interface TimeframeRow {
   seconds: number;
+  /** Short form, for a badge: `30m`. */
   label: string;
+  /** Spoken form, for a heading: `30 minutes`. */
+  name: string;
   /** Bars available at this size. Small numbers explain an empty row. */
   bars: number;
   patterns: DetectedPattern[];
@@ -37,15 +39,15 @@ export interface TimeframeRow {
 export function scanTimeframes(
   resample: (seconds: number) => Candle[],
   overrides: Partial<PatternConfig> = {},
-  timeframes: readonly { seconds: number; label: string }[] = SCAN_TIMEFRAMES,
+  timeframes: readonly { seconds: number; label: string; name: string }[] = SCAN_TIMEFRAMES,
 ): TimeframeRow[] {
-  return timeframes.map(({ seconds, label }) => {
+  return timeframes.map(({ seconds, label, name }) => {
     const bars = resample(seconds);
     // The forming bar is excluded here too, for the reason `LiveTracker` gives:
     // a table that flickered between two readings of the same minute would be
     // harder to trust than one that lags by a bar.
     const closed = bars.slice(0, -1);
     const { patterns } = detectPatterns(closed, overrides);
-    return { seconds, label, bars: closed.length, patterns };
+    return { seconds, label, name, bars: closed.length, patterns };
   });
 }

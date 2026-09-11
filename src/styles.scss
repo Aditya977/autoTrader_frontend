@@ -33,6 +33,17 @@
   --warn: #e0a458;
   --danger: #f0666b;
 
+  /* Chart patterns get their own hues, deliberately outside the up/down pair.
+     Green and red are already spoken for twice over on this chart — the candle
+     bodies use them, and so do the support and resistance lines — so a pattern
+     drawn in green would read as a level or a rising bar rather than as an
+     outline over both. Cyan and violet share no hue with either, stay legible
+     on the dark ground, and are far enough apart to tell a bullish shape from a
+     bearish one at a glance. */
+  --pattern-bullish: #22d3ee;
+  --pattern-bearish: #c084fc;
+  --pattern-neutral: #8b9bad;
+
   /* Chart palette — shared with the Lightweight Charts options object so the
      canvas and the DOM around it cannot drift apart. */
   --chart-grid: #18222d;
@@ -44,8 +55,8 @@
   --font: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   /* Tabular figures matter here: a price that shifts sideways as it ticks is
      harder to read than one that changes in place. */
-  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas,
-    monospace;
+  --font-mono:
+    ui-monospace, 'SF Mono', 'JetBrains Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 }
 
 * {
@@ -121,7 +132,8 @@ input[type='text'] {
 select {
   /* The caret is drawn here rather than left to the platform, which otherwise
      paints a light-mode triangle on this dark background. */
-  background-image: linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-faint) 50%),
     linear-gradient(135deg, var(--text-faint) 50%, transparent 50%);
   background-position:
     calc(100% - 1.1rem) 55%,
