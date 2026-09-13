@@ -98,6 +98,49 @@ export interface PatternConfig {
   showForming: boolean;
   /** Whether the measured-move line is drawn. */
   showTargets: boolean;
+  /**
+   * How tall a rectangle must be, in ATRs, to be a range rather than a pause.
+   *
+   * Two flat boundaries a third of an ATR apart describe a quiet twenty
+   * minutes, not a formation with a measured move behind it. Without a floor
+   * this is the single easiest pattern in the set to find, and the least
+   * worth finding.
+   */
+  rectangleMinHeightAtr: number;
+  /**
+   * How far a flag's pole must travel, in ATRs, and how few bars it may take.
+   *
+   * The pole is the whole claim of a flag or a pennant: a sharp directional
+   * move that the consolidation is resting from. A drift of the same size
+   * over fifty bars is a trend, and the shape that follows it is a range
+   * rather than a flag.
+   */
+  poleMinAtr: number;
+  /**
+   * How steep the pole must be, in ATRs per bar.
+   *
+   * The height alone is not enough and leaving it out was a real mistake: a
+   * three-ATR move spread over fifteen bars is a fifth of an ATR per bar,
+   * which is ordinary drift. On a gently oscillating series that let five
+   * bars in six qualify as a flagpole, and the detector spent its whole time
+   * budget fitting channels to consolidations that were not resting from
+   * anything. A flagpole is a near-vertical move by definition, and this is
+   * the part of the definition that says so.
+   */
+  poleMinAtrPerBar: number;
+  poleMaxBars: number;
+  /** Bars the consolidation may span. Shorter than the shapes fitted on pivots. */
+  flagMinBars: number;
+  flagMaxBars: number;
+  /**
+   * Most of the pole a flag may give back, as a fraction.
+   *
+   * A consolidation that retraces the whole pole has undone the move it was
+   * supposed to be pausing inside, which is a reversal wearing a flag's
+   * outline. The golden ratio is the conventional line and is used here for
+   * that reason rather than any other.
+   */
+  flagMaxRetrace: number;
   enabledPatterns: readonly PatternType[];
 }
 
@@ -109,6 +152,13 @@ export const ALL_PATTERN_TYPES: readonly PatternType[] = [
   'ascending_triangle',
   'descending_triangle',
   'symmetrical_triangle',
+  'rising_wedge',
+  'falling_wedge',
+  'rectangle',
+  'bullish_flag',
+  'bearish_flag',
+  'bullish_pennant',
+  'bearish_pennant',
 ];
 
 export const defaultPatternConfig: PatternConfig = {
@@ -128,6 +178,13 @@ export const defaultPatternConfig: PatternConfig = {
   maxRenderedPatterns: 20,
   showForming: true,
   showTargets: true,
+  rectangleMinHeightAtr: 1.5,
+  poleMinAtr: 3,
+  poleMinAtrPerBar: 0.75,
+  poleMaxBars: 15,
+  flagMinBars: 8,
+  flagMaxBars: 30,
+  flagMaxRetrace: 0.618,
   enabledPatterns: ALL_PATTERN_TYPES,
 };
 

@@ -39,10 +39,26 @@ import { PATTERN_NAMES, type DetectedPattern } from '../chart-patterns/types';
 import { LiveTracker } from '../chart-patterns/engine/live-tracker';
 import { scanTimeframes, type TimeframeRow } from '../chart-patterns/engine/timeframe-scan';
 import { defaultPatternConfig } from '../chart-patterns/config';
+import { CandlePatternsApiService } from '../candle-patterns/candle-patterns-api.service';
+import { CandlePatternSync, withLabels } from '../candle-patterns/candle-pattern-sync';
+import { defaultCandlePatternTuning, tuningKey } from '../candle-patterns/config';
+import {
+  LightweightChartsCandlePatternOverlay,
+  type RenderedCandlePattern,
+} from '../candle-patterns/render/candle-pattern-overlay';
+import { CandlePatternListComponent } from '../candle-patterns/ui/candle-pattern-list.component';
 import { PREF, PreferencesService } from '../shared/preferences.service';
 import { PatternTimeframeTableComponent } from '../chart-patterns/ui/pattern-timeframe-table.component';
 import { EMA_INDICATORS, ema, emaColor } from '../chart-indicators/ema';
 import { VWAP_COLOR, vwapLine } from '../chart-indicators/vwap';
+import {
+  PDR_COLOR,
+  PDR_LINES,
+  PDR_LINE_TYPE,
+  PDR_STYLE,
+  previousDayRangeLines,
+  type PdrLine,
+} from '../chart-indicators/previous-day-range';
 import {
   CandleSeriesBuffer,
   toCandlestickData,
@@ -64,6 +80,7 @@ import {
   type ChartInterval,
   type ChartLevels,
   type ChartSessionSnapshot,
+  type PreviousDayRange,
   type SessionLevelsQuery,
   type StartStreamRequest,
   type SupportResistanceLevel,
@@ -138,6 +155,9 @@ function fade(hex: string, alpha: number): string {
 }
 
 /** What the pointer is currently over, or the last bar when it is elsewhere. */
+/** The two readings the findings panel can show. */
+type FindingsTab = 'candles' | 'timeframes';
+
 interface Readout {
   time: string;
   open: string;
@@ -153,7 +173,7 @@ interface Readout {
 @Component({
   selector: 'app-chart-stream',
   standalone: true,
-  imports: [PatternTimeframeTableComponent],
+  imports: [PatternTimeframeTableComponent, CandlePatternListComponent],
   template: `
     <section class="panel" [class.dimmed]="finished()">
       <header class="head">
@@ -172,48 +192,86 @@ interface Readout {
             <i class="dot"></i>{{ statusText() }}
           </span>
           <span class="bars">{{ barCount() }} bars</span>
-          <button
-            type="button"
-            class="ghost sr"
-            [class.on]="showLevels()"
-            [disabled]="!session()"
-            [attr.aria-pressed]="showLevels()"
-            title="Support &amp; resistance"
-            (click)="toggleLevels()"
-          >
-            {{ levelsLoading() ? 'S/R…' : 'S/R' }}
-          </button>
-          <button
-            type="button"
-            class="ghost pat"
-            [class.on]="showPatterns()"
-            [attr.aria-pressed]="showPatterns()"
-            title="Chart patterns"
-            (click)="togglePatterns()"
-          >
-            Patterns
-            @if (patterns().length) {
-              <i class="badge">{{ patterns().length }}</i>
-            }
-          </button>
+
+          <!-- One menu for everything drawn over the price. Six separate
+               buttons overflowed the panel at the width two legs get side by
+               side, which clipped Stop off the end of the header. -->
           <div class="ind">
             <button
               type="button"
               class="ghost"
-              [class.on]="indicatorCount() > 0"
-              [attr.aria-expanded]="showIndicators()"
+              [class.on]="overlayCount() > 0"
+              [attr.aria-expanded]="showOverlays()"
               aria-haspopup="true"
-              title="Indicators"
-              (click)="toggleIndicators()"
+              [title]="candleStatus()"
+              (click)="toggleOverlayMenu()"
             >
-              Indicators
-              @if (indicatorCount()) {
-                <i class="badge">{{ indicatorCount() }}</i>
+              {{ overlaysBusy() ? 'Overlays…' : 'Overlays' }}
+              @if (candlePatternsError()) {
+                <i class="badge bad">!</i>
+              } @else if (overlayCount()) {
+                <i class="badge">{{ overlayCount() }}</i>
               }
             </button>
 
-            @if (showIndicators()) {
-              <div class="menu" role="group" aria-label="Indicators">
+            @if (showOverlays()) {
+              <div class="menu" role="group" aria-label="Overlays">
+                <p class="menu-head">Price levels</p>
+                <label class="opt" [class.off]="!session()">
+                  <input
+                    type="checkbox"
+                    [checked]="showLevels()"
+                    [disabled]="!session()"
+                    (change)="toggleLevels()"
+                  />
+                  <span class="swatch sr"></span>
+                  <span class="opt-name">Support &amp; resistance</span>
+                  @if (levelsLoading()) {
+                    <i class="opt-note">…</i>
+                  } @else if (levels().length) {
+                    <i class="opt-note">{{ levels().length }}</i>
+                  }
+                </label>
+                <label class="opt" [class.off]="!request()">
+                  <input
+                    type="checkbox"
+                    [checked]="showPreviousDayRange()"
+                    [disabled]="!request()"
+                    (change)="togglePreviousDayRange()"
+                  />
+                  <span class="swatch pdr"></span>
+                  <span class="opt-name">Previous day range</span>
+                  @if (pdrLoading()) {
+                    <i class="opt-note">…</i>
+                  }
+                </label>
+
+                <p class="menu-head">Patterns</p>
+                <label class="opt">
+                  <input
+                    type="checkbox"
+                    [checked]="showPatterns()"
+                    (change)="togglePatterns()"
+                  />
+                  <span class="swatch pat"></span>
+                  <span class="opt-name">Chart patterns</span>
+                  @if (patterns().length) {
+                    <i class="opt-note">{{ patterns().length }}</i>
+                  }
+                </label>
+                <label class="opt">
+                  <input
+                    type="checkbox"
+                    [checked]="showCandlePatterns()"
+                    (change)="toggleCandlePatterns()"
+                  />
+                  <span class="swatch candles"></span>
+                  <span class="opt-name">Candlesticks</span>
+                  @if (candleBadge(); as badge) {
+                    <i class="opt-note" [class.bad]="candlePatternsError()">{{ badge }}</i>
+                  }
+                </label>
+
                 <p class="menu-head">Moving averages</p>
                 @for (choice of emaChoices; track choice.period) {
                   <label class="opt">
@@ -235,10 +293,10 @@ interface Readout {
                 <button
                   type="button"
                   class="menu-clear"
-                  [disabled]="!indicatorCount()"
-                  (click)="clearIndicators()"
+                  [disabled]="!overlayCount()"
+                  (click)="clearOverlays()"
                 >
-                  Clear
+                  Clear all
                 </button>
               </div>
             }
@@ -249,28 +307,86 @@ interface Readout {
         </div>
       </header>
 
+      <!-- One findings panel with two tabs rather than two stacked accordions.
+           Both describe patterns in the series on screen, and opening them
+           both pushed the chart itself down twice. -->
       <div class="tf-panel">
-        <button
-          type="button"
-          class="tf-head"
-          [attr.aria-expanded]="showPatternTable()"
-          (click)="togglePatternTable()"
-        >
-          <span class="caret">{{ showPatternTable() ? '▾' : '▸' }}</span>
-          Patterns by timeframe
-          <span class="hint">the same series read at every bar size</span>
-        </button>
+        <div class="tf-bar">
+          <button
+            type="button"
+            class="tf-head"
+            [attr.aria-expanded]="findingsOpen()"
+            (click)="toggleFindings()"
+          >
+            <span class="caret">{{ findingsOpen() ? '▾' : '▸' }}</span>
+            Patterns
+            <span class="hint">{{ findingsHint() }}</span>
+          </button>
 
-        @if (showPatternTable()) {
-          <app-pattern-timeframe-table
-            [timeframes]="timeframeRows()"
-            [currentSeconds]="displaySeconds()"
-          />
-          <p class="tf-note">
-            Only shapes scoring above 75% are shown, here and on the chart. Confidence is how well a
-            shape fits its own definition, not a probability that it plays out. The forming bar is
-            excluded at every size, so a reading never changes under a bar that had not closed.
-          </p>
+          @if (findingsOpen()) {
+            <div class="tabs" role="tablist" aria-label="Pattern findings">
+              <button
+                type="button"
+                role="tab"
+                class="tab"
+                [class.on]="findingsTab() === 'candles'"
+                [attr.aria-selected]="findingsTab() === 'candles'"
+                (click)="showFindingsTab('candles')"
+              >
+                Candlesticks
+                @if (candlePatterns().length) {
+                  <i class="badge">{{ candlePatterns().length }}</i>
+                }
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="tab"
+                [class.on]="findingsTab() === 'timeframes'"
+                [attr.aria-selected]="findingsTab() === 'timeframes'"
+                (click)="showFindingsTab('timeframes')"
+              >
+                By timeframe
+              </button>
+            </div>
+          }
+        </div>
+
+        @if (findingsOpen()) {
+          @if (findingsTab() === 'candles') {
+            @if (showCandlePatterns()) {
+              <app-candle-pattern-list
+                [hits]="candlePatterns()"
+                [labels]="candleLabels()"
+                [formatTime]="formatCandleTime"
+              />
+              <p class="tf-note">
+                The shape, the trend behind it, and what price did next are three separate
+                readings. Confidence adds them up on a fixed scale — an engineering score, not a
+                probability that the market turns. The forming bar is excluded, so a box never
+                appears and vanishes under a candle that had not closed.
+              </p>
+            } @else {
+              <p class="tf-off">
+                Candlesticks are switched off.
+                <button type="button" class="link" (click)="toggleCandlePatterns()">
+                  Turn them on
+                </button>
+                to read them here and on the chart.
+              </p>
+            }
+          } @else {
+            <app-pattern-timeframe-table
+              [timeframes]="timeframeRows()"
+              [currentSeconds]="displaySeconds()"
+            />
+            <p class="tf-note">
+              The same series read at every bar size. Only shapes scoring above 75% are shown, here
+              and on the chart. Confidence is how well a shape fits its own definition, not a
+              probability that it plays out. The forming bar is excluded at every size, so a reading
+              never changes under a bar that had not closed.
+            </p>
+          }
         }
       </div>
 
@@ -311,6 +427,55 @@ interface Readout {
             }
           </span>
         </div>
+      }
+
+      @if (previousDayBand(); as pdr) {
+        <div class="levels pdr-band">
+          <span class="tag">PDR</span>
+          <span class="lvl pdh">PDH {{ formatBand(pdr.pdh) }}</span>
+          <span class="lvl mid">Mid {{ formatBand(pdr.mid) }}</span>
+          <span class="lvl pdl">PDL {{ formatBand(pdr.pdl) }}</span>
+          <span class="meta">
+            from {{ pdr.previousTradingDate }}
+            @if (pdr.days > 1) {
+              · {{ pdr.days }} days annotated
+            }
+          </span>
+        </div>
+      }
+
+      @if (candleBand(); as cs) {
+        <div class="levels candle-band">
+          <span class="tag">CANDLES</span>
+          @if (cs.loading) {
+            <span class="meta">reading the bars on screen…</span>
+          } @else if (cs.found) {
+            @if (cs.bullish) {
+              <span class="lvl up">▲ {{ cs.bullish }}</span>
+            }
+            @if (cs.bearish) {
+              <span class="lvl down">▼ {{ cs.bearish }}</span>
+            }
+            <span class="meta">
+              {{ cs.found }} pattern{{ cs.found === 1 ? '' : 's' }} scoring
+              {{ cs.floor }}+ across {{ cs.bars }} bars
+            </span>
+          } @else {
+            <!-- The case that used to be indistinguishable from a broken
+                 feature: it ran, and the market was quiet. -->
+            <span class="meta none">
+              nothing scored {{ cs.floor }} or better across {{ cs.bars }} bars
+            </span>
+          }
+        </div>
+      }
+
+      @if (candlePatternsError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
+      @if (pdrError(); as message) {
+        <p class="error">{{ message }}</p>
       }
 
       @if (levelsError(); as message) {
@@ -439,11 +604,17 @@ interface Readout {
       text-overflow: ellipsis;
     }
 
+    /* Wraps rather than overflowing. The panel clips its own overflow, so a
+       header that will not wrap does not merely look cramped — it puts Stop
+       past the right edge where it cannot be clicked, which is exactly what
+       happened once two legs sat side by side with six buttons on the bar. */
     .state {
       display: flex;
       align-items: center;
-      gap: 0.6rem;
-      flex: none;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 0.45rem 0.6rem;
+      min-width: 0;
     }
 
     .status {
@@ -544,23 +715,53 @@ interface Readout {
       color: var(--down);
     }
 
-    /* The S/R toggle reads as pressed, because it is a mode the chart is in
-       rather than an action — the lines stay until it is pressed again. */
-    .sr.on {
+    /* The overlay button reads as pressed while anything is drawn, because
+       that is a mode the chart is in rather than an action. */
+    .ghost.on {
       border-color: rgba(90, 169, 230, 0.55);
       background: rgba(90, 169, 230, 0.14);
       color: var(--accent);
     }
 
-    .ghost.pat.on {
-      color: var(--accent);
-      border-color: var(--accent-dim);
-    }
-    .ghost.pat .badge {
+    .ghost .badge {
       font-style: normal;
       margin-left: 0.3rem;
       font-size: 0.62rem;
       opacity: 0.8;
+    }
+
+    /* Same band as S/R and PDR, in the candlesticks own colour so the three
+       are distinguishable at a glance. */
+    .candle-band .tag {
+      color: var(--up);
+    }
+
+    /* The S/R band inverts these on purpose — a level above price is
+       resistance, so it is drawn red. A count of bullish patterns is not a
+       level, so it takes the plain reading: up is green. */
+    .candle-band .lvl.up {
+      color: var(--up);
+    }
+    .candle-band .lvl.down {
+      color: var(--down);
+    }
+
+    /* Found nothing is an answer, not a fault: it stays in the muted voice
+       the rest of the band uses rather than borrowing the error colour. */
+    .candle-band .meta.none {
+      font-style: italic;
+    }
+
+    .pdr-band .lvl.pdh,
+    .pdr-band .lvl.pdl,
+    .pdr-band .lvl.mid {
+      color: #c3d94e;
+    }
+
+    /* The midpoint is derived rather than observed, and reads as secondary
+       here for the same reason its line is drawn thinner. */
+    .pdr-band .lvl.mid {
+      opacity: 0.75;
     }
 
     /* The indicators menu is positioned against this, so the button and the
@@ -656,9 +857,115 @@ interface Readout {
       opacity: 0.8;
     }
 
+    /* A row swatch stands in for the pressed colour each toggle used to carry
+       on its own button, so the menu still says at a glance which overlay is
+       which on the chart. */
+    .swatch.sr {
+      background: var(--accent);
+    }
+    .swatch.pdr {
+      background: #c3d94e;
+    }
+    .swatch.pat {
+      background: var(--pattern-bullish);
+    }
+    .swatch.candles {
+      background: var(--up);
+    }
+
+    /* A count, or one character of "still fetching", at the end of the row. */
+    .opt-note {
+      margin-left: auto;
+      padding-left: 0.5rem;
+      font-style: normal;
+      font-size: 0.66rem;
+      color: var(--text-faint);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Unavailable rather than off: support and resistance needs a session, and
+       the previous day's range needs an instrument. Dimming the row says that
+       better than hiding it, which would read as the feature not existing. */
+    .opt-note.bad,
+    .badge.bad {
+      color: var(--down);
+      font-weight: 700;
+    }
+
+    .opt.off {
+      opacity: 0.45;
+      cursor: default;
+    }
+
     .tf-panel {
       border-top: 1px solid var(--border);
     }
+
+    /* The summary button and the tabs share a row. The tabs appear only once
+       the panel is open, so the collapsed state stays a single quiet line. */
+    .tf-bar {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      padding-right: 0.6rem;
+    }
+    .tf-bar .tf-head {
+      width: auto;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0.2rem;
+      flex: none;
+    }
+
+    .tab {
+      padding: 0.2rem 0.5rem;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: none;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+    .tab:hover {
+      color: var(--text);
+    }
+    .tab.on {
+      border-color: var(--accent-dim);
+      background: rgba(90, 169, 230, 0.12);
+      color: var(--accent);
+    }
+    .tab .badge {
+      font-style: normal;
+      margin-left: 0.25rem;
+      font-size: 0.62rem;
+      opacity: 0.8;
+    }
+
+    /* The tab is reachable with its overlay switched off, so it has to explain
+       itself. An empty list would read as a search that found nothing. */
+    .tf-off {
+      margin: 0;
+      padding: 0.4rem 0.6rem 0.6rem;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .link {
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--accent);
+      font: inherit;
+      cursor: pointer;
+      text-decoration: underline;
+    }
+
     .tf-head {
       display: flex;
       align-items: baseline;
@@ -870,6 +1177,30 @@ export class ChartStreamComponent {
   private volume?: ISeriesApi<'Histogram'>;
   /** v5 moved markers out of the series and into a plugin attached to it. */
   private markers?: ISeriesMarkersPluginApi<Time>;
+  /* --- previous day range -------------------------------------------- */
+  /** Whether PDH/PDL/mid are drawn. Persisted, like the other toggles. */
+  readonly showPreviousDayRange = signal(false);
+  /**
+   * One range per trading day the chart can show, newest last.
+   *
+   * Held rather than recomputed because it cannot change: every value comes
+   * from a session that has already closed. Fetched once per instrument/date
+   * and then only redrawn — which is what "static across the session" means in
+   * practice, and why no amount of streaming can move these lines.
+   */
+  readonly previousDayRanges = signal<PreviousDayRange[]>([]);
+  readonly pdrLoading = signal(false);
+  readonly pdrError = signal<string | null>(null);
+  /**
+   * The instrument and date the held ranges belong to.
+   *
+   * The guard against the one way this overlay can lie: turning it off, moving
+   * the panel to another instrument, and turning it back on would otherwise
+   * redraw the previous instrument's levels over the new one's bars.
+   */
+  private pdrFetchedFor: string | null = null;
+  private readonly pdrSeries = new Map<PdrLine, ISeriesApi<'Line'>>();
+
   private readonly buffer = new CandleSeriesBuffer();
 
   /**
@@ -890,13 +1221,83 @@ export class ChartStreamComponent {
   readonly timeframeRows = signal<TimeframeRow[]>([]);
   /** Persisted per browser, so the chart opens the way it was left. */
   readonly showPatterns = signal(true);
-  readonly showPatternTable = signal(false);
+  /** Which findings tab is on screen, and whether the panel is open at all. */
+  readonly findingsOpen = signal(false);
+  readonly findingsTab = signal<FindingsTab>('candles');
+
+  /* --- candlestick patterns ------------------------------------------ */
+
+  /**
+   * The candlestick overlay: boxes around the bars, with the reading beside
+   * them.
+   *
+   * A separate overlay from {@link overlay} rather than a second kind of hit
+   * inside it. The two describe different things — one the shape of individual
+   * candles, the other multi-bar price structure — they are toggled
+   * independently, and they are drawn in different colours so a reader can
+   * tell which feature is speaking. Sharing one primitive would couple their
+   * visibility and their palettes for no saving.
+   */
+  private readonly candleOverlay = new LightweightChartsCandlePatternOverlay();
+  private readonly candleSync = new CandlePatternSync();
+  private readonly candleApi = inject(CandlePatternsApiService);
+  private readonly candleTuning = defaultCandlePatternTuning;
+  /** In flight, so a second request is not stacked behind the first. */
+  private candleRequest?: Subscription;
+  /** Set when bars closed while a request was out. See . */
+  private candleSeriesMoved = false;
+
+  /** What the toolbar counts. */
+  readonly candlePatterns = signal<RenderedCandlePattern[]>([]);
+  /**
+   * Off by default, unlike the chart patterns.
+   *
+   * It costs a request, and a user who has not asked for it should not have
+   * their chart make one. The preference then remembers whichever way they
+   * left it.
+   */
+  readonly showCandlePatterns = signal(false);
+  readonly candlePatternsLoading = signal(false);
+  readonly candlePatternsError = signal<string | null>(null);
+  /**
+   * Whether an answer has come back at all since the overlay was switched on.
+   *
+   * The difference between "not asked yet" and "asked, and nothing cleared the
+   * floor" is the whole of whether a reader can trust this feature. Without
+   * it both look like an unmarked chart, and someone who presses the toggle
+   * and sees nothing cannot tell a quiet market from a request that failed.
+   */
+  readonly candlePatternsRan = signal(false);
+  /**
+   * Display names as the backend supplied them, for the secondary readings.
+   *
+   * The primary's name is resolved onto each hit; the rest are looked up from
+   * here by the list, so a pattern a bar merely *also* was does not cost a
+   * string on the wire for every hit that shares it.
+   */
+  readonly candleLabels = signal<Record<string, string>>({});
+  /**
+   * Bars the last answer covered, as the backend counted them.
+   *
+   * Taken from the response rather than measured from the chart: the request
+   * is capped to a window, so the series on screen and the series that was
+   * read are not always the same length, and the band should report the one
+   * the answer is actually about.
+   */
+  readonly candleBarsAnalysed = signal(0);
+
+  /** Bar open time, as the list prints it. Passed in so the list holds no timezone. */
+  protected readonly formatCandleTime = (ms: number): string =>
+    this.displaySeconds() >= 86_400
+      ? formatIstDay(ms / 1000)
+      : formatIstTime(ms / 1000);
 
   /* --- indicators ---------------------------------------------------- */
   protected readonly emaChoices = EMA_INDICATORS;
   /** Periods currently drawn. Persisted, like the pattern toggle. */
   readonly selectedEmas = signal<readonly number[]>([]);
-  readonly showIndicators = signal(false);
+  /** Whether the overlay menu is open. Not persisted — a menu is not a setting. */
+  readonly showOverlays = signal(false);
   /** One line series per selected period, keyed so it can be removed. */
   private readonly emaSeries = new Map<number, ISeriesApi<'Line'>>();
   /** Whether the session VWAP is drawn. Persisted, like the averages. */
@@ -1053,6 +1454,21 @@ export class ChartStreamComponent {
     };
   });
 
+  /**
+   * The numbers the PDR bar shows: the newest day's range.
+   *
+   * The newest rather than all of them, for the same reason the S/R bar shows
+   * only the pair around price — the older days are already drawn *on* the
+   * chart, above their own bars, which is where a level belongs. What a header
+   * adds is the one set that applies to the session being watched now.
+   */
+  readonly previousDayBand = computed(() => {
+    const ranges = this.previousDayRanges();
+    const newest = ranges.at(-1);
+    if (!this.showPreviousDayRange() || !newest) return null;
+    return { ...newest, days: ranges.length };
+  });
+
   constructor() {
     effect(() => {
       const host = this.chartHost().nativeElement;
@@ -1089,6 +1505,11 @@ export class ChartStreamComponent {
       const remembered = this.prefs.get(PREF.showPatterns, true);
       this.showPatterns.set(remembered);
       this.overlay.setVisible(remembered);
+
+      this.candleOverlay.attach(this.candles);
+      const rememberedCandles = this.prefs.get(PREF.showCandlePatterns, false);
+      this.showCandlePatterns.set(rememberedCandles);
+      this.candleOverlay.setVisible(rememberedCandles);
 
       // Restored before the first redraw, so a chart opens with the averages
       // it was left with rather than drawing them a frame later.
@@ -1145,6 +1566,14 @@ export class ChartStreamComponent {
         // newest closed bar may be one the tracker has already seen — so the
         // scan has to be forced rather than waiting for the next close.
         this.tracker.reset();
+        // The candlestick boxes go before the redraw rather than after it.
+        // They are anchored to bar *open* times, and re-bucketing invents a
+        // new set of those: a box on the 09:17 one-minute bar has no anchor in
+        // a five-minute series, so it would not be removed by the diff — it
+        // would simply stop being drawn, leaving the toolbar counting boxes
+        // nobody can see. The re-request happens inside `redraw`, because the
+        // key carries the interval.
+        this.clearCandlePatterns();
         this.redraw({ refit: true });
         this.refreshPatterns({ force: true });
         // The bars are free to re-bucket; the levels are not. They were found
@@ -1156,8 +1585,10 @@ export class ChartStreamComponent {
 
     this.destroyRef.onDestroy(() => {
       this.emaSeries.clear();
+      this.pdrSeries.clear();
       this.vwapSeries = undefined;
       this.overlay.destroy();
+      this.candleOverlay.destroy();
       this.chart?.unsubscribeCrosshairMove(this.onCrosshair);
       this.chart?.remove();
       this.chart = undefined;
@@ -1228,6 +1659,17 @@ export class ChartStreamComponent {
     // Patterns belong to the series that produced them. Carrying the last
     // instrument’s shapes onto a new one would draw confident nonsense.
     this.clearPatterns();
+    // And the candlestick boxes, for the same reason: they describe the bars
+    // of the series that produced them.
+    this.clearCandlePatterns();
+    // Same for the previous-day levels, which are per instrument *and* per
+    // date — see `pdrKey`.
+    this.clearPreviousDayRange();
+    // The overlay switches itself off for a new session rather than carrying
+    // over: it is enabled by a click and fetches when enabled, so carrying it
+    // across would annotate an instrument nobody asked about.
+    this.showPreviousDayRange.set(false);
+    this.removePdrSeries();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
     this.showLevels.set(request?.levels !== undefined);
@@ -1312,6 +1754,11 @@ export class ChartStreamComponent {
   /** Price, at the same precision the readout uses. */
   protected formatLevel(level: SupportResistanceLevel): string {
     return formatPrice(level.price);
+  }
+
+  /** The same precision again, for a bare number the template holds. */
+  protected formatBand(price: number): string {
+    return formatPrice(price);
   }
 
   /**
@@ -1468,8 +1915,123 @@ export class ChartStreamComponent {
     // screen. Redraws are already batched to a microtask, so a replay that
     // delivers a whole day in one burst detects once rather than per bar.
     this.refreshPatterns();
+    this.refreshCandlePatterns();
     this.drawEmas();
     this.drawVwap();
+    this.drawPreviousDayRange();
+  }
+
+  /**
+   * Asks the backend about the drawn series, when there is a new question.
+   *
+   * The gate is {@link CandlePatternSync.shouldRequest} rather than a
+   * bar-closed check, and the difference matters: this is a *network* call, so
+   * the thing to avoid is not merely wasted CPU but a request per tick. The
+   * key covers the instrument, the bar size, the window and the tuning, so a
+   * redraw that changes none of them asks nothing.
+   *
+   * Works the same in both session modes, which is the whole reason the
+   * endpoint takes bars rather than an instrument. A `TEST` replay sends the
+   * bars it has reached and is annotated up to there; a `LIVE` chart sends its
+   * closed bars and is annotated up to the last one. Neither can be told
+   * about a bar it is not showing.
+   */
+  private refreshCandlePatterns(): void {
+    if (!this.showCandlePatterns()) return;
+
+    // A request is already out. Note that the series has moved and ask again
+    // when it lands, rather than cancelling it.
+    //
+    // Cancelling was the original design, on the reasoning that two answers
+    // landing out of order would leave the older one on screen. It starved:
+    // every closed bar is a new question, so on a live chart or a paced replay
+    // the next bar reliably arrives before the answer does, each arrival
+    // cancelled the request before it landed, and the overlay stayed empty for
+    // the whole session — the toggle looked broken because in effect it was.
+    // Letting one request finish and coalescing everything that happened
+    // meanwhile into a single follow-up keeps the ordering guarantee and
+    // actually terminates.
+    if (this.candleRequest) {
+      this.candleSeriesMoved = true;
+      return;
+    }
+
+    const bars = CandlePatternSync.closedBars(this.drawn, this.candleTuning.windowBars);
+    if (bars.length === 0) {
+      this.applyCandlePatterns([]);
+      return;
+    }
+
+    const key = CandlePatternSync.key({
+      seriesKey: this.session()?.instrumentKey ?? 'unknown',
+      interval: this.intervalName(),
+      bars,
+      tuning: tuningKey(this.candleTuning),
+    });
+    if (!this.candleSync.shouldRequest(key)) return;
+
+    this.candlePatternsLoading.set(true);
+
+    this.candleRequest = this.candleApi
+      .detect({
+        interval: this.intervalName(),
+        bars: CandlePatternSync.toWire(bars),
+        confirmationBars: this.candleTuning.confirmationBars,
+        extremeLookback: this.candleTuning.extremeLookback,
+        minConfidence: this.candleTuning.minConfidence,
+        patterns: [...this.candleTuning.patterns],
+        maxHits: this.candleTuning.maxHits,
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (response) => {
+          this.candleRequest = undefined;
+          this.candlePatternsLoading.set(false);
+          this.candlePatternsError.set(null);
+          this.candlePatternsRan.set(true);
+          // Dropped if the user switched the overlay off while this was in
+          // flight, so a late answer cannot redraw boxes they just hid.
+          if (this.showCandlePatterns()) {
+            this.candleLabels.set(response.labels);
+            this.candleBarsAnalysed.set(response.barsAnalysed);
+            this.applyCandlePatterns(withLabels(response.hits, response.labels));
+          }
+          this.askAgainIfSeriesMoved();
+        },
+        error: (error: ChartStreamError) => {
+          this.candleRequest = undefined;
+          this.candlePatternsLoading.set(false);
+          // A degraded chart, not a broken one — the bars are already drawn.
+          // The key is cleared so the next closed bar retries rather than the
+          // overlay staying silently empty for the rest of the session.
+          this.candlePatternsError.set(error.message);
+          this.candlePatternsRan.set(true);
+          this.candleSync.reset();
+          this.askAgainIfSeriesMoved();
+        },
+      });
+  }
+
+  /**
+   * Re-asks once for everything that arrived while a request was out.
+   *
+   * Once, not once per bar: the bars that closed in the meantime are already
+   * in the series, so a single pass over the current window describes all of
+   * them. The flag is cleared before the call so a request that fails
+   * immediately cannot leave it set and spin.
+   */
+  private askAgainIfSeriesMoved(): void {
+    if (!this.candleSeriesMoved) return;
+    this.candleSeriesMoved = false;
+    this.refreshCandlePatterns();
+  }
+
+  /** Syncs the overlay to a result, touching only what changed. */
+  private applyCandlePatterns(hits: readonly RenderedCandlePattern[]): void {
+    const { changed, removedIds } = this.candleSync.diff(hits);
+    for (const id of removedIds) this.candleOverlay.remove(id);
+    for (const hit of changed) this.candleOverlay.upsert(hit);
+    this.candlePatterns.set([...hits]);
   }
 
   /**
@@ -1497,7 +2059,9 @@ export class ChartStreamComponent {
     for (const pattern of updated) this.overlay.upsert(pattern);
 
     this.patterns.set(patterns);
-    if (this.showPatternTable()) this.refreshTimeframeTable();
+    if (this.findingsOpen() && this.findingsTab() === 'timeframes') {
+      this.refreshTimeframeTable();
+    }
   }
 
   /**
@@ -1518,9 +2082,145 @@ export class ChartStreamComponent {
 
   /* --- indicators ---------------------------------------------------- */
 
-  protected toggleIndicators(): void {
-    this.showIndicators.update((open) => !open);
+  protected toggleOverlayMenu(): void {
+    this.showOverlays.update((open) => !open);
   }
+
+  /**
+   * What the candlestick overlay reports, in one short token.
+   *
+   * Four states an unmarked chart cannot tell apart on its own, which is the
+   * failure this exists to end: a reader who switches the overlay on and sees
+   * no boxes has no way to know whether the request is still out, came back
+   * empty, or failed outright. `null` only while the overlay is off, when the
+   * absence of boxes explains itself.
+   */
+  protected readonly candleBadge = computed<string | null>(() => {
+    if (!this.showCandlePatterns()) return null;
+    if (this.candlePatternsError()) return '!';
+    if (this.candlePatternsLoading()) return '…';
+    const found = this.candlePatterns().length;
+    if (found > 0) return String(found);
+    // Ran and found nothing. A real answer, and a different one from silence.
+    return this.candlePatternsRan() ? '0' : '…';
+  });
+
+  /**
+   * The one-line summary drawn above the chart while the overlay is on.
+   *
+   * Every other overlay already has one — S/R prints the nearest level either
+   * side, the previous day's range prints its three prices — and the
+   * candlesticks not having one is what made this feature fail silently. An
+   * empty chart looked the same whether the overlay was still fetching, had
+   * found nothing above the floor, or had never run at all, and the only way
+   * to tell was to open a menu.
+   *
+   * The important case is `found: 0`. That is a real answer about a quiet
+   * stretch of chart, and it has to read as one. Saying which floor nothing
+   * cleared, and over how many bars, is what makes it actionable rather than
+   * merely reassuring.
+   *
+   * `null` while the overlay is off, when an unmarked chart explains itself,
+   * and on failure, which the error banner states more plainly.
+   */
+  protected readonly candleBand = computed(() => {
+    if (!this.showCandlePatterns()) return null;
+    if (this.candlePatternsError()) return null;
+
+    const hits = this.candlePatterns();
+    return {
+      loading: this.candlePatternsLoading() || !this.candlePatternsRan(),
+      found: hits.length,
+      bullish: hits.filter((hit) => hit.reversalBias === 'BULLISH').length,
+      bearish: hits.filter((hit) => hit.reversalBias === 'BEARISH').length,
+      floor: this.candleTuning.minConfidence,
+      bars: this.candleBarsAnalysed(),
+    };
+  });
+
+  /** The whole story behind {@link candleBadge}, for the control's tooltip. */
+  protected readonly candleStatus = computed(() => {
+    const error = this.candlePatternsError();
+    if (error) return `Candlesticks failed: ${error}`;
+    if (!this.showCandlePatterns()) return 'Candlestick patterns — off';
+    if (this.candlePatternsLoading() || !this.candlePatternsRan()) {
+      return 'Candlesticks — reading the bars on screen';
+    }
+    const found = this.candlePatterns().length;
+    return found > 0
+      ? `${found} candlestick patterns on the bars on screen`
+      : `No candlestick pattern reached ${this.candleTuning.minConfidence} on these bars`;
+  });
+
+  /**
+   * How many things are currently drawn over the price.
+   *
+   * Everything the menu can switch on counts the same, because from the
+   * reader's side they are the same kind of thing: a mark on the chart that
+   * was not there before. The badge is what replaces six buttons each showing
+   * their own state.
+   */
+  protected readonly overlayCount = computed(
+    () =>
+      (this.showLevels() ? 1 : 0) +
+      (this.showPreviousDayRange() ? 1 : 0) +
+      (this.showPatterns() ? 1 : 0) +
+      (this.showCandlePatterns() ? 1 : 0) +
+      this.selectedEmas().length +
+      (this.showVwap() ? 1 : 0),
+  );
+
+  /** Whether anything behind the menu is still fetching. */
+  protected readonly overlaysBusy = computed(
+    () => this.levelsLoading() || this.pdrLoading() || this.candlePatternsLoading(),
+  );
+
+  /**
+   * Switches everything off.
+   *
+   * Each toggle is called rather than each signal set, because turning an
+   * overlay off is not only a flag: the line series are created and destroyed
+   * so an overlay that is off costs nothing, and the pattern overlays have an
+   * in-flight request to drop.
+   */
+  protected clearOverlays(): void {
+    if (this.showLevels()) this.toggleLevels();
+    if (this.showPreviousDayRange()) this.togglePreviousDayRange();
+    if (this.showPatterns()) this.togglePatterns();
+    if (this.showCandlePatterns()) this.toggleCandlePatterns();
+    this.clearIndicators();
+  }
+
+  /* --- the findings panel -------------------------------------------- */
+
+  protected toggleFindings(): void {
+    this.findingsOpen.update((open) => !open);
+    // The timeframe table costs six extra detection passes, so it is only
+    // computed while its own tab is the one on screen.
+    if (this.findingsOpen() && this.findingsTab() === 'timeframes') {
+      this.refreshTimeframeTable();
+    }
+  }
+
+  protected showFindingsTab(tab: FindingsTab): void {
+    this.findingsTab.set(tab);
+    if (tab === 'timeframes') this.refreshTimeframeTable();
+  }
+
+  /**
+   * The one line of summary on the collapsed panel.
+   *
+   * An error wins over a count: a reader who sees "12 candlesticks" has no way
+   * to know the number is stale because the last request failed.
+   */
+  protected readonly findingsHint = computed(() => {
+    const error = this.candlePatternsError();
+    if (error) return error;
+    const candles = this.candlePatterns().length;
+    const shapes = this.patterns().length;
+    if (!this.showCandlePatterns()) return `${shapes} chart shapes`;
+    return `${candles} candlesticks · ${shapes} chart shapes`;
+  });
 
   protected isEmaOn(period: number): boolean {
     return this.selectedEmas().includes(period);
@@ -1545,16 +2245,6 @@ export class ChartStreamComponent {
     }
     this.rememberEmas();
   }
-
-  /**
-   * Everything the menu currently draws — averages plus VWAP.
-   *
-   * One count rather than two, because the button it sits on is one button: a
-   * badge reading 3 while a fourth line is on screen is worse than no badge.
-   */
-  protected readonly indicatorCount = computed(
-    () => this.selectedEmas().length + (this.showVwap() ? 1 : 0),
-  );
 
   protected readonly vwapColor = VWAP_COLOR;
 
@@ -1667,6 +2357,149 @@ export class ChartStreamComponent {
     );
   }
 
+  /* --- previous day range -------------------------------------------- */
+
+  /**
+   * Shows or hides PDH/PDL/mid.
+   *
+   * Turning it on fetches only when what is held does not belong to the
+   * instrument and date on screen; otherwise it redraws what is already there,
+   * so toggling twice costs one request rather than two. The values cannot go
+   * stale within a session — they come from days that have closed — so there
+   * is no refresh, on a timer or otherwise.
+   */
+  togglePreviousDayRange(): void {
+    const next = !this.showPreviousDayRange();
+    this.showPreviousDayRange.set(next);
+
+    if (!next) {
+      this.removePdrSeries();
+      return;
+    }
+
+    this.addPdrSeries();
+    if (this.pdrFetchedFor === this.pdrKey()) this.drawPreviousDayRange();
+    else this.fetchPreviousDayRange();
+  }
+
+  /**
+   * What a held set of ranges belongs to.
+   *
+   * The date is part of it, not only the instrument: the same option replayed
+   * on two different days has two different previous days, and a key that
+   * ignored the date would reuse the first day's levels on the second.
+   */
+  private pdrKey(): string | null {
+    const request = this.request();
+    if (!request) return null;
+    const { type, underlying, strike, expiry } = request.instrument;
+    return [type, underlying, strike ?? '', expiry ?? '', request.date ?? 'live'].join('|');
+  }
+
+  /**
+   * Asks the backend for one range per trading day this chart can show.
+   *
+   * `historyDays + 1` because the session's own day needs a range too, and the
+   * prior days drawn behind it each need their own — a multi-day chart where
+   * only the newest session is annotated is the bug this argument exists to
+   * avoid.
+   */
+  private fetchPreviousDayRange(): void {
+    const request = this.request();
+    const key = this.pdrKey();
+    if (!request || key === null) return;
+
+    this.pdrError.set(null);
+    this.pdrLoading.set(true);
+    this.api
+      .previousDayRange({
+        instrument: request.instrument,
+        // Omitted for LIVE, where the backend's "today" is the right anchor
+        // and the browser's clock is not necessarily the exchange's.
+        ...(request.date === undefined ? {} : { date: request.date }),
+        lookbackDays: (request.historyDays ?? 0) + 1,
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.pdrLoading.set(false);
+          this.pdrFetchedFor = key;
+          this.previousDayRanges.set(result.ranges);
+          this.drawPreviousDayRange();
+        },
+        error: (e: ChartStreamError) => {
+          this.pdrLoading.set(false);
+          // Its own line rather than `error`: no previous-day lines is a
+          // chart without an annotation, not a chart that is wrong about
+          // its bars. No fallback is attempted — the only other source
+          // available aggregates intraday bars, and on an option that
+          // disagrees with the exchange daily candle by far more than a
+          // tick.
+          this.pdrError.set(`Previous day range unavailable — ${describe(e)}`);
+        },
+      });
+  }
+
+  private addPdrSeries(): void {
+    if (!this.chart) return;
+    for (const line of PDR_LINES) {
+      if (this.pdrSeries.has(line)) continue;
+      const style = PDR_STYLE[line];
+      this.pdrSeries.set(
+        line,
+        this.chart.addSeries(LineSeries, {
+          color: PDR_COLOR,
+          lineWidth: style.width,
+          lineStyle: style.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          // Flat across each day, vertical at the boundary — see the module.
+          lineType: PDR_LINE_TYPE,
+          // The label the requirement asks for: the title rides on the price
+          // scale beside the value, so the line reads "PDH 22,450.00" against
+          // the axis rather than needing a legend.
+          title: style.title,
+          lastValueVisible: true,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        }),
+      );
+    }
+  }
+
+  private removePdrSeries(): void {
+    for (const series of this.pdrSeries.values()) this.chart?.removeSeries(series);
+    this.pdrSeries.clear();
+  }
+
+  /**
+   * Redraws the three lines over the bars on screen.
+   *
+   * Re-derived from `drawn` on every redraw rather than set once, because the
+   * *placement* follows the bars even though the values do not: changing the
+   * display interval re-buckets the x axis, and a series still holding
+   * one-minute times would draw its levels against bars that are no longer
+   * there.
+   */
+  private drawPreviousDayRange(): void {
+    if (!this.pdrSeries.size) return;
+    const lines = previousDayRangeLines(this.drawn, this.previousDayRanges());
+    for (const [line, series] of this.pdrSeries) {
+      series.setData(
+        lines[line].map((point) => ({
+          time: point.time as UTCTimestamp,
+          ...(point.value === undefined ? {} : { value: point.value }),
+        })),
+      );
+    }
+  }
+
+  private clearPreviousDayRange(): void {
+    this.previousDayRanges.set([]);
+    this.pdrFetchedFor = null;
+    this.pdrError.set(null);
+    this.pdrLoading.set(false);
+    this.drawPreviousDayRange();
+  }
+
   /** Shows or hides the overlay, and remembers which. */
   togglePatterns(): void {
     const next = !this.showPatterns();
@@ -1675,17 +2508,63 @@ export class ChartStreamComponent {
     this.prefs.set(PREF.showPatterns, next);
   }
 
-  togglePatternTable(): void {
-    const next = !this.showPatternTable();
-    this.showPatternTable.set(next);
-    if (next) this.refreshTimeframeTable();
-  }
-
   private clearPatterns(): void {
     this.overlay.clear();
     this.tracker.reset();
     this.patterns.set([]);
     this.timeframeRows.set([]);
+  }
+
+  /**
+   * Turns the candlestick overlay on or off.
+   *
+   * Switching it on redraws what is already held if the series has not moved,
+   * and otherwise asks — the same read-through the PDR toggle uses, and for
+   * the same reason: a user toggling to compare should not pay for a request
+   * each time.
+   *
+   * The boxes are hidden rather than discarded when it goes off, so switching
+   * back is instant and costs nothing.
+   */
+  toggleCandlePatterns(): void {
+    const next = !this.showCandlePatterns();
+    this.showCandlePatterns.set(next);
+    this.candleOverlay.setVisible(next);
+    this.prefs.set(PREF.showCandlePatterns, next);
+
+    if (next) {
+      this.candlePatternsError.set(null);
+      this.refreshCandlePatterns();
+      return;
+    }
+    // Nothing in flight is worth finishing for an overlay nobody is looking
+    // at, and a paced replay can leave a request outstanding for a while.
+    this.candleRequest?.unsubscribe();
+    this.candleRequest = undefined;
+    this.candleSeriesMoved = false;
+    this.candlePatternsLoading.set(false);
+  }
+
+  /**
+   * Drops every box and forgets the last question.
+   *
+   * Both halves matter when the panel moves to another session. The boxes
+   * belong to the series that produced them, and the remembered key would
+   * suppress the first request for the new series if the old one happened to
+   * match — two instruments charted on the same day share every bar time.
+   */
+  private clearCandlePatterns(): void {
+    this.candleRequest?.unsubscribe();
+    this.candleRequest = undefined;
+    this.candleSeriesMoved = false;
+    this.candleOverlay.clear();
+    this.candleSync.reset();
+    this.candlePatterns.set([]);
+    this.candleLabels.set({});
+    this.candlePatternsRan.set(false);
+    this.candleBarsAnalysed.set(0);
+    this.candlePatternsLoading.set(false);
+    this.candlePatternsError.set(null);
   }
 
   /**

@@ -64,7 +64,14 @@ export type PatternType =
   | 'inverse_head_and_shoulders'
   | 'ascending_triangle'
   | 'descending_triangle'
-  | 'symmetrical_triangle';
+  | 'symmetrical_triangle'
+  | 'rising_wedge'
+  | 'falling_wedge'
+  | 'rectangle'
+  | 'bullish_flag'
+  | 'bearish_flag'
+  | 'bullish_pennant'
+  | 'bearish_pennant';
 
 export type PatternDirection = 'bullish' | 'bearish' | 'neutral';
 
@@ -145,6 +152,13 @@ export const PATTERN_NAMES: Readonly<Record<PatternType, string>> = {
   ascending_triangle: 'Ascending triangle',
   descending_triangle: 'Descending triangle',
   symmetrical_triangle: 'Symmetrical triangle',
+  rising_wedge: 'Rising wedge',
+  falling_wedge: 'Falling wedge',
+  rectangle: 'Rectangle',
+  bullish_flag: 'Bull flag',
+  bearish_flag: 'Bear flag',
+  bullish_pennant: 'Bullish pennant',
+  bearish_pennant: 'Bearish pennant',
 };
 
 const DIRECTION_NAMES: Readonly<Record<PatternDirection, string>> = {

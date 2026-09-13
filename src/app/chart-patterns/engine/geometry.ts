@@ -93,8 +93,20 @@ export function firstCloseBeyond(
   from: number,
   level: (index: number) => number,
   side: 'above' | 'below',
+  /**
+   * Last bar to look at, inclusive. Defaults to the end of the series.
+   *
+   * Worth bounding whenever the caller knows the break has a deadline. A flag
+   * that has not resolved within its own span has stopped being a flag rather
+   * than still being one that is waiting, and searching to the end of the
+   * series for it was the difference between a detector costing a millisecond
+   * and one costing eighty — it runs once per bar, not once per pivot window,
+   * so the scan is quadratic in the length of the chart.
+   */
+  to: number = candles.length - 1,
 ): number | null {
-  for (let i = Math.max(0, from); i < candles.length; i++) {
+  const last = Math.min(to, candles.length - 1);
+  for (let i = Math.max(0, from); i <= last; i++) {
     const close = (candles[i] as Candle).close;
     const at = level(i);
     if (side === 'above' ? close > at : close < at) return i;

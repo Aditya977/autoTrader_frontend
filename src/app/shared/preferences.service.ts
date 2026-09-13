@@ -66,6 +66,7 @@ export class PreferencesService {
 /** Keys in one place, so two components cannot disagree about a name. */
 export const PREF = {
   showPatterns: 'chart.showPatterns',
+  showCandlePatterns: 'chart.showCandlePatterns',
   emaPeriods: 'chart.emaPeriods',
   showVwap: 'chart.showVwap',
 } as const;

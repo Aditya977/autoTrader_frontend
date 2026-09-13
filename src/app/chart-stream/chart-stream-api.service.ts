@@ -10,6 +10,8 @@ import type {
   InstrumentRequest,
   LevelsRequest,
   OptionChain,
+  PreviousDayRangeRequest,
+  PreviousDayRangeResponse,
   ResolvedInstrument,
   SessionLevelsQuery,
   StartStreamRequest,
@@ -135,6 +137,19 @@ export class ChartStreamApiService {
 
     return this.http
       .get<ChartLevels>(`${this.base}/streamer/stream/${sessionId}/levels`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * PDH/PDL/mid per trading day, from each day's actual 1D candle.
+   *
+   * Session-independent like {@link levels}, and fetched once rather than
+   * watched: the numbers come from days that have already closed, so nothing
+   * about them can change while the chart is open.
+   */
+  previousDayRange(request: PreviousDayRangeRequest): Observable<PreviousDayRangeResponse> {
+    return this.http
+      .post<PreviousDayRangeResponse>(`${this.base}/streamer/stream/previous-day-range`, request)
       .pipe(catchError(this.unwrap));
   }
 

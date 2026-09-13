@@ -4,6 +4,8 @@ import { atr } from './atr';
 import { detectDoubleTopsAndBottoms } from './detectors/double-top-bottom';
 import { detectHeadAndShoulders } from './detectors/head-and-shoulders';
 import { detectTriangles } from './detectors/triangles';
+import { detectChannels } from './detectors/channels';
+import { detectFlags } from './detectors/flags';
 import type { DetectorContext } from './detectors/shared';
 import { findPivots } from './pivots';
 
@@ -24,6 +26,15 @@ const FAMILY: Readonly<Record<DetectedPattern['type'], string>> = {
   ascending_triangle: 'triangle',
   descending_triangle: 'triangle',
   symmetrical_triangle: 'triangle',
+  // Wedges converge like triangles but read the opposite way, so they are
+  // their own family: a wedge inside a triangle is two genuine readings.
+  rising_wedge: 'wedge',
+  falling_wedge: 'wedge',
+  rectangle: 'rectangle',
+  bullish_flag: 'flag',
+  bearish_flag: 'flag',
+  bullish_pennant: 'flag',
+  bearish_pennant: 'flag',
 };
 
 /**
@@ -70,7 +81,15 @@ export function detectPatterns(
       ...detectDoubleTopsAndBottoms(context),
       ...detectHeadAndShoulders(context),
       ...detectTriangles(context),
+      ...detectChannels(context),
     );
+  }
+
+  // Outside the scale loop, deliberately. A flag is found from its pole and
+  // the bars of its own consolidation, never from pivots, so every scale
+  // would hand it identical candles and it would do the same work four times.
+  if (pivotsByScale.length > 0) {
+    found.push(...detectFlags({ candles, atrs, pivots: pivotsByScale[0] as Pivot[], config }));
   }
 
   const kept = found.filter((p) => p.confidence > config.minConfidence);

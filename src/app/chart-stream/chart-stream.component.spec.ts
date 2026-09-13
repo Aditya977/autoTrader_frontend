@@ -492,8 +492,24 @@ describe('ChartStreamComponent — support & resistance', () => {
   }
 
   const text = (): string => fixture.nativeElement.textContent as string;
-  const levelsButton = (): HTMLButtonElement =>
-    fixture.nativeElement.querySelector('.state button.sr') as HTMLButtonElement;
+  /**
+   * The support/resistance toggle, which is now a row inside the overlay menu.
+   *
+   * It used to be its own button on the header. Six buttons stopped fitting at
+   * the width two legs get side by side, so every overlay moved behind one
+   * control — see chart-header-layout.spec.ts. This opens that menu if it is
+   * closed, so the tests below still read as pressing S/R.
+   */
+  const levelsButton = (): HTMLInputElement => {
+    const root = fixture.nativeElement as HTMLElement;
+    if (!root.querySelector('.menu')) {
+      (root.querySelector('.ind > button') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
+    const rows = [...root.querySelectorAll('.menu .opt')] as HTMLElement[];
+    const row = rows.find((r) => (r.textContent ?? '').includes('Support'));
+    return row?.querySelector('input') as HTMLInputElement;
+  };
   const levelsBar = (): HTMLElement | null =>
     fixture.nativeElement.querySelector('.levels') as HTMLElement | null;
 

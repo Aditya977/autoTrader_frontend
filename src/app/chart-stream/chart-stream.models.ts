@@ -177,6 +177,46 @@ export interface StreamLevelsOptions extends LevelTuning {
   refreshEveryBars?: number;
 }
 
+/* -------------------------------------------------------------------------
+ * Previous day range (PDH / PDL / mid)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The previous trading day's high, low and midpoint, for one session.
+ *
+ * Derived backend-side from that day's actual 1D candle — never by summing
+ * intraday bars — and fixed for the whole of `date`: nothing about it changes
+ * as the session streams, which is the point of drawing it.
+ */
+export interface PreviousDayRange {
+  /** The trading day these lines are drawn on, `YYYY-MM-DD`. */
+  date: string;
+  /** The trading day the numbers came from — the trading day before `date`. */
+  previousTradingDate: string;
+  /** Previous day's high. */
+  pdh: number;
+  /** Previous day's low. */
+  pdl: number;
+  /** `(pdh + pdl) / 2`. */
+  mid: number;
+}
+
+/** `POST /streamer/stream/previous-day-range` — PDH/PDL/mid, no session needed. */
+export interface PreviousDayRangeRequest {
+  instrument: InstrumentRequest;
+  /** Last trading day to return a range for. Omit for "today". */
+  date?: string;
+  /** Trading days to return ranges for, counted back from `date` inclusive. */
+  lookbackDays?: number;
+}
+
+export interface PreviousDayRangeResponse {
+  instrumentKey: string;
+  tradingsymbol: string;
+  /** One entry per requested trading day, ascending by `date`. */
+  ranges: PreviousDayRange[];
+}
+
 export interface StartStreamRequest {
   mode: ChartSessionMode;
   instrument: InstrumentRequest;
