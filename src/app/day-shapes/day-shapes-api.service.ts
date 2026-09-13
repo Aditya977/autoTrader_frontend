@@ -11,7 +11,6 @@ import type {
   SessionBarsView,
   SessionShapeError,
   SessionShapeView,
-  SimilarSessionsView,
 } from './day-shapes.models';
 
 /**
@@ -95,40 +94,6 @@ export class DayShapesApiService {
     return this.http
       .get<SessionShapeView | SessionShapeError>(
         `${this.base}/strategy/day-shapes/session?${query.toString()}`,
-      )
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * Past sessions whose chart looks like this one, best match first.
-   *
-   * `matchCount` is the figure the panel shows collapsed and `matches` is
-   * what it reveals when expanded; the backend counts before it caps, so the
-   * two never disagree.
-   *
-   * `minScore` is a real gate. Below it the endpoint returns an empty list
-   * rather than the closest few, which is why the panel shows nothing at all
-   * when a day has no lookalikes instead of a weak best-of.
-   */
-  similar(
-    symbol: string,
-    date: string,
-    timeframe: number,
-    minScore: number,
-    window = 375,
-    limit = 30,
-  ): Observable<SimilarSessionsView | SessionShapeError> {
-    const query = new URLSearchParams({
-      symbol,
-      date,
-      timeframe: String(timeframe),
-      window: String(window),
-      minScore: String(minScore),
-      limit: String(limit),
-    });
-    return this.http
-      .get<SimilarSessionsView | SessionShapeError>(
-        `${this.base}/strategy/day-shapes/similar?${query.toString()}`,
       )
       .pipe(catchError(this.unwrap));
   }
