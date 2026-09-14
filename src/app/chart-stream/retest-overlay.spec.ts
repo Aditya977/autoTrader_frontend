@@ -1,13 +1,11 @@
-import { LineStyle } from 'lightweight-charts';
 import {
   SCENARIO_LABELS,
   SCENARIO_TAGS,
   describeRetest,
+  labelFor,
   mergeMarkers,
   opacityFor,
   retestMarkers,
-  retestPriceLines,
-  titleFor,
 } from './retest-overlay';
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import { bucketStartMs } from './chart-time';
@@ -16,11 +14,11 @@ import type { ChartRetest, RetestScenario } from './chart-stream.models';
 /**
  * The translation from a retest to what the chart draws.
  *
- * Pure, so these are about the decisions rather than the canvas: that a level
- * is drawn as a band and never as a line, that quality reaches the rendering
- * as something continuous, that an unresolved retest stays visibly distinct
- * from a settled one, and that a marker lands on a bar the chart is actually
- * drawing.
+ * Pure, so these are about the decisions rather than the canvas: that a retest
+ * is marked and never drawn as a line, that quality reaches the rendering as
+ * something continuous, that a mark lands on a bar the chart is actually
+ * drawing, and that marks landing on the same bar merge instead of stacking
+ * their labels on top of each other.
  */
 
 /** 09:15 IST on 2026-08-14, the session open the buckets are anchored to. */
@@ -71,64 +69,47 @@ describe('opacityFor', () => {
   });
 });
 
-describe('retestPriceLines', () => {
-  it('draws the level as a band, never as a single line', () => {
-    const lines = retestPriceLines(retest());
-    expect(lines.length).toBe(2);
-    expect(lines.map((line) => line.price).sort()).toEqual([101.5, 102]);
-    // Collapsing the band to a midpoint would put back exactly the "price
-    // never touched my level" confusion the zone exists to remove.
-    expect(lines.some((line) => line.price === 101.75)).toBeFalse();
-  });
-
-  it('labels only the upper edge, so two axis tags cannot overlap', () => {
-    const lines = retestPriceLines(retest());
-    expect(lines.filter((line) => line.axisLabelVisible).length).toBe(1);
-    expect(lines[0].axisLabelVisible).toBeTrue();
-    expect(lines[0].title).toContain(SCENARIO_TAGS.exact);
-    expect(lines[1].title).toBe('');
-  });
-
-  it('dots an unresolved retest and dashes a settled one', () => {
-    expect(retestPriceLines(retest({ unresolved: true }))[0].lineStyle).toBe(LineStyle.Dotted);
-    expect(retestPriceLines(retest({ unresolved: false }))[0].lineStyle).toBe(LineStyle.Dashed);
-  });
-
-  it('colours by breakout direction, from the shared palette', () => {
-    // The same green as an up candle and a support line: the chart says the
-    // same thing the same way everywhere.
-    expect(retestPriceLines(retest({ direction: 'BULLISH' }))[0].color).toContain('38, 161, 123');
-    expect(retestPriceLines(retest({ direction: 'BEARISH' }))[0].color).toContain('239, 83, 80');
-  });
-
-  it('fades and thins by quality rather than switching on valid', () => {
-    const strong = retestPriceLines(retest({ quality: 0.9 }))[0];
-    const weak = retestPriceLines(retest({ quality: 0.1 }))[0];
-    expect(strong.color).not.toBe(weak.color);
-    expect(strong.lineWidth).toBeGreaterThan(weak.lineWidth);
-  });
-
-  it('gives both edges of one band the same weight and colour', () => {
-    const [upper, lower] = retestPriceLines(retest());
-    expect(lower.color).toBe(upper.color);
-    expect(lower.lineWidth).toBe(upper.lineWidth);
-    expect(lower.lineStyle).toBe(upper.lineStyle);
-  });
-});
-
-describe('titleFor', () => {
+describe('labelFor', () => {
   it('names the scenario', () => {
-    expect(titleFor(retest({ scenario: 'sweep' }))).toContain(SCENARIO_TAGS.sweep);
+    expect(labelFor([retest({ scenario: 'sweep' })])).toContain(SCENARIO_TAGS.sweep);
   });
 
   it('shows the touch count only once it is a warning', () => {
     // A decay term: a first touch has nothing to say, a third is a warning.
-    expect(titleFor(retest({ touchCount: 1 }))).not.toContain('×');
-    expect(titleFor(retest({ touchCount: 3 }))).toContain('×3');
+    expect(labelFor([retest({ touchCount: 1 })])).not.toContain('×');
+    expect(labelFor([retest({ touchCount: 3 })])).toContain('×3');
+  });
+
+  it('drops the touch count once the mark stands for more than one retest', () => {
+    // "×3" against two merged retests reads as a count of them, which it isn't.
+    const merged = labelFor([retest({ touchCount: 3 }), retest({ scenario: 'deep' })]);
+    expect(merged).not.toContain('×');
   });
 
   it('flags a higher-timeframe-only retest', () => {
-    expect(titleFor(retest({ htfOnly: true }))).toContain('HTF');
+    expect(labelFor([retest({ htfOnly: true })])).toContain('HTF');
+    // Only when every retest behind the mark is: one on-timeframe retest means
+    // the mark is on a bar that is really there.
+    expect(labelFor([retest({ htfOnly: true }), retest({ htfOnly: false })])).not.toContain('HTF');
+  });
+
+  it('names each distinct shape on the bar once', () => {
+    const label = labelFor([retest({ scenario: 'exact' }), retest({ scenario: 'exact' })]);
+    expect(label).toBe(SCENARIO_TAGS.exact);
+  });
+
+  it('counts the shapes it has no room to spell out', () => {
+    // Four tags on one bar is a word salad the eye skips.
+    const label = labelFor([
+      retest({ scenario: 'exact' }),
+      retest({ scenario: 'deep' }),
+      retest({ scenario: 'sweep' }),
+      retest({ scenario: 'gap' }),
+    ]);
+    expect(label).toContain(SCENARIO_TAGS.exact);
+    expect(label).toContain(SCENARIO_TAGS.deep);
+    expect(label).toContain('+2');
+    expect(label).not.toContain(SCENARIO_TAGS.gap);
   });
 
   it('has a label and a tag for every scenario the backend can emit', () => {
@@ -176,16 +157,83 @@ describe('retestMarkers', () => {
     expect(retestMarkers([retest({ direction: 'BEARISH' })], 60)[0].position).toBe('aboveBar');
   });
 
-  it('marks the resumption only once there is one', () => {
-    expect(retestMarkers([retest()], 60).length).toBe(2);
-    expect(retestMarkers([retest({ resumptionAt: null, unresolved: true })], 60).length).toBe(1);
+  it('marks a retest once, on the bar price came back on', () => {
+    // One mark, not two: an approach and a resumption two bars apart used to
+    // put a second label on the chart saying nothing the first did not.
+    const markers = retestMarkers([retest()], 60);
+    expect(markers.length).toBe(1);
+    expect(markers[0].time as number).toBe(Math.floor((OPEN + 15 * MINUTE) / 1000));
   });
 
-  it('draws no approach mark for a time-based retest', () => {
-    // §4.5 — price never comes back, so there is no approach bar to mark.
+  it('falls back to the resumption for a time-based retest', () => {
+    // §4.5 — price never comes back, so there is no approach bar to mark and
+    // no direction for an arrow to point.
     const markers = retestMarkers([retest({ scenario: 'time', approachAt: null })], 60);
     expect(markers.length).toBe(1);
     expect(markers[0].shape).toBe('circle');
+    expect(markers[0].time as number).toBe(Math.floor((OPEN + 16 * MINUTE) / 1000));
+  });
+
+  it('leaves a retest with no bar yet to the table', () => {
+    const markers = retestMarkers(
+      [retest({ approachAt: null, resumptionAt: null, unresolved: true })],
+      60,
+    );
+    expect(markers.length).toBe(0);
+  });
+
+  it('merges the retests that land on one bar into a single mark', () => {
+    // The reason the chart was unreadable: two dozen labels stacked on the
+    // same few bars near the right edge.
+    const markers = retestMarkers(
+      [
+        retest({ scenario: 'exact', quality: 0.4 }),
+        retest({ scenario: 'deep', approachAt: OPEN + 15 * MINUTE + 30_000, quality: 0.9 }),
+      ],
+      60,
+    );
+    expect(markers.length).toBe(1);
+    // Named and coloured by the strongest of them, not by the first to arrive.
+    expect(markers[0].text?.startsWith(SCENARIO_TAGS.deep)).toBeTrue();
+    expect(markers[0].color).toBe(retestMarkers([retest({ quality: 0.9 })], 60)[0].color);
+  });
+
+  it('keeps the two sides of one bar apart', () => {
+    // A bullish mark sits below the bar and a bearish one above it: merging
+    // them would put one of them on the wrong side of the candle.
+    const markers = retestMarkers(
+      [retest({ direction: 'BULLISH' }), retest({ direction: 'BEARISH' })],
+      60,
+    );
+    expect(markers.length).toBe(2);
+    expect(markers.map((m) => m.position).sort()).toEqual(['aboveBar', 'belowBar']);
+  });
+
+  it('merges more of them the coarser the chart gets', () => {
+    const spread = [
+      retest({ approachAt: OPEN + 15 * MINUTE }),
+      retest({ approachAt: OPEN + 17 * MINUTE }),
+      retest({ approachAt: OPEN + 19 * MINUTE }),
+    ];
+    expect(retestMarkers(spread, 60).length).toBe(3);
+    expect(retestMarkers(spread, 300).length).toBe(1);
+  });
+
+  it('fades a weak retest and keeps a strong one bright', () => {
+    const strong = retestMarkers([retest({ quality: 0.9 })], 60)[0];
+    const weak = retestMarkers([retest({ quality: 0.1 })], 60)[0];
+    expect(strong.color).not.toBe(weak.color);
+  });
+
+  it('colours by breakout direction, from the shared palette', () => {
+    // The same green as an up candle and a support line: the chart says the
+    // same thing the same way everywhere.
+    expect(retestMarkers([retest({ direction: 'BULLISH' })], 60)[0].color).toContain(
+      '38, 161, 123',
+    );
+    expect(retestMarkers([retest({ direction: 'BEARISH' })], 60)[0].color).toContain(
+      '239, 83, 80',
+    );
   });
 
   it('returns markers in ascending time, as setMarkers requires', () => {

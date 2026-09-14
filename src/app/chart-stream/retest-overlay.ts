@@ -1,40 +1,38 @@
-import {
-  LineStyle,
-  type PriceLineOptions,
-  type SeriesMarker,
-  type UTCTimestamp,
-} from 'lightweight-charts';
+import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import { THEME, fade } from './chart-theme';
 import { bucketStartMs } from './chart-time';
 import type { ChartRetest, RetestScenario } from './chart-stream.models';
 
 /**
- * Retests → the price lines and markers a chart draws for them.
+ * Retests → the marks a chart draws for them.
  *
- * Pure, and deliberately shaped like `priceLineFor` and `markersFor`: no chart,
- * no DOM, no Angular, so the decisions that matter are testable without a
- * canvas and the component stays "call this, hand the result to the series".
+ * Pure, and deliberately shaped like `markersFor`: no chart, no DOM, no
+ * Angular, so the decisions that matter are testable without a canvas and the
+ * component stays "call this, hand the result to the series".
  *
- * Three things the drawing has to get right, each of them the reason the
+ * Retests are *marked*, never drawn as lines. Two dozen of them on one chart is
+ * an ordinary afternoon, and a band apiece is four dozen horizontal lines plus
+ * their axis tags: the levels they were meant to explain vanish behind them,
+ * and so do the candles. A mark on the bar where price came back says the same
+ * thing, and says it where the trader is already looking — the numbers behind
+ * it live in the tooltip.
+ *
+ * Two things the marking still has to get right, each of them the reason the
  * backend reports what it reports:
  *
- * 1. **A level is a band.** Every retest draws *two* lines, at `zoneLow` and
- *    `zoneHigh`. Collapsing them to a midpoint puts back exactly the "price
- *    never touched my level" confusion the zone exists to remove — price
- *    genuinely turns inside the band without printing the number.
- *
- * 2. **Quality is continuous, so the drawing is too.** Weight and opacity
- *    follow `quality` rather than a valid/invalid switch, because the backend
- *    scores rather than gates, and rendering a 0.9 and a 0.3 identically would
- *    throw that away at the last step.
- *
- * 3. **Markers land on bars the chart is drawing.** Times are snapped to the
+ * 1. **Marks land on bars the chart is drawing.** Times are snapped to the
  *    displayed interval, exactly as `trade-markers.ts` does: a retest that
  *    resolved at 10:42 has to mark the 10:40 bar on a 5-minute chart, or it
  *    marks nothing at all.
  *
- * Colour comes from the shared palette, so a retest band under price is the
- * same green as a support line and as an up candle.
+ * 2. **One bar carries one mark.** Once snapped, several retests genuinely
+ *    share a bar — more so the coarser the chart, and levels cluster anyway —
+ *    and the marker plugin stacks their labels straight on top of each other.
+ *    Marks that land together are merged into one that names what arrived, so
+ *    the chart stays readable at 1m and at 1D.
+ *
+ * Colour comes from the shared palette, so a retest of a level below price is
+ * the same green as a support line and as an up candle.
  */
 
 /** Short labels for the scenario column — what a trader would call each shape. */
@@ -50,7 +48,7 @@ export const SCENARIO_LABELS: Readonly<Record<RetestScenario, string>> = {
   none: 'Unclassified',
 };
 
-/** Compact forms for the summary row, where space is one line. */
+/** Compact forms for the summary row and the marks, where space is one line. */
 export const SCENARIO_TAGS: Readonly<Record<RetestScenario, string>> = {
   exact: 'exact',
   shallow: 'shallow',
@@ -62,6 +60,9 @@ export const SCENARIO_TAGS: Readonly<Record<RetestScenario, string>> = {
   range_boundary: 'range',
   none: '—',
 };
+
+/** How many scenario tags one merged mark spells out before it counts instead. */
+const MAX_TAGS_PER_MARK = 2;
 
 /**
  * Opacity from quality, floored at 0.3.
@@ -75,93 +76,87 @@ export function opacityFor(quality: number): number {
 }
 
 /**
- * The two lines that bound one retest's band.
+ * The label one mark carries.
  *
- * Only the upper edge claims a price-scale tag: two axis labels a few ticks
- * apart overlap and neither can be read. An unresolved retest is drawn dotted
- * rather than dashed — the same distinction the backend keeps between `valid`
- * and `unresolved`, and the reason it refuses to guess which one it will
- * become.
+ * Names the shapes that landed on the bar, best-scoring first, and counts the
+ * rest rather than spelling them out — four tags on one bar is a word salad the
+ * eye skips. `touchCount` rides along while a mark still stands for a single
+ * retest, because it is a decay term: by the third or fourth touch the resting
+ * liquidity is largely gone, so "×3" should read as a warning rather than as
+ * confirmation.
  */
-export function retestPriceLines(retest: ChartRetest): PriceLineOptions[] {
-  const bullish = retest.direction === 'BULLISH';
-  const base = bullish ? THEME.up : THEME.down;
-  const color = fade(base, opacityFor(retest.quality));
-  const lineStyle = retest.unresolved ? LineStyle.Dotted : LineStyle.Dashed;
-  const lineWidth = retest.quality >= 0.6 ? 2 : 1;
+export function labelFor(retests: readonly ChartRetest[]): string {
+  const tags: string[] = [];
+  for (const retest of retests) {
+    const tag = SCENARIO_TAGS[retest.scenario];
+    if (!tags.includes(tag)) tags.push(tag);
+  }
 
-  const shared = {
-    color,
-    lineWidth,
-    lineStyle,
-    lineVisible: true,
-    axisLabelColor: fade(base, 0.85),
-    axisLabelTextColor: '#06121d',
-  } satisfies Partial<PriceLineOptions>;
+  const shown = tags.slice(0, MAX_TAGS_PER_MARK);
+  const hidden = tags.length - shown.length;
+  const parts = [shown.join('/')];
+  if (hidden > 0) parts.push(`+${hidden}`);
 
-  return [
-    { ...shared, price: retest.zoneHigh, axisLabelVisible: true, title: titleFor(retest) },
-    { ...shared, price: retest.zoneLow, axisLabelVisible: false, title: '' },
-  ];
-}
+  const only = retests.length === 1 ? retests[0] : null;
+  if (only && only.touchCount > 1) parts.push(`×${only.touchCount}`);
+  if (retests.every((retest) => retest.htfOnly)) parts.push('HTF');
 
-/**
- * The title on the band's upper edge.
- *
- * Carries the two things the geometry does not show: which shape it was, and
- * how worn the level is. `touchCount` appears from the second touch on,
- * because it is a decay term — by the third or fourth the resting liquidity is
- * largely gone — so "×3" should read as a warning, not as confirmation.
- */
-export function titleFor(retest: ChartRetest): string {
-  const parts = [SCENARIO_TAGS[retest.scenario]];
-  if (retest.touchCount > 1) parts.push(`×${retest.touchCount}`);
-  if (retest.htfOnly) parts.push('HTF');
   return parts.join(' ');
 }
 
 /**
- * Entry and resumption marks for every retest, snapped to the drawn interval.
+ * One mark per retest, snapped to the drawn interval and merged where they collide.
+ *
+ * The marked bar is the one price came *back* on — the approach — because that
+ * is the bar a trader is deciding on. A time correction never comes back
+ * (§4.5), so it marks where the move resumed instead; a retest that has done
+ * neither yet has no bar to claim and is left to the table.
  *
  * `displaySeconds` is the interval the chart is *currently* drawing, not the
- * one the retests were detected on: it is the drawn one a marker has to land
- * on. Same rule, and the same `bucketStartMs`, as the trade markers.
+ * one the retests were detected on: it is the drawn one a mark has to land on.
+ * Same rule, and the same `bucketStartMs`, as the trade markers.
  */
 export function retestMarkers(
   retests: readonly ChartRetest[],
   displaySeconds: number,
 ): SeriesMarker<UTCTimestamp>[] {
-  const markers: SeriesMarker<UTCTimestamp>[] = [];
+  /** bar + side → the retests that landed there. */
+  const byBar = new Map<string, { time: UTCTimestamp; bullish: boolean; at: ChartRetest[] }>();
 
   for (const retest of retests) {
+    const at = retest.approachAt ?? retest.resumptionAt;
+    if (at === null) continue;
+
     const bullish = retest.direction === 'BULLISH';
-    const color = fade(bullish ? THEME.up : THEME.down, opacityFor(retest.quality));
+    const time = snap(at, displaySeconds);
+    const key = `${time}|${bullish}`;
 
-    if (retest.approachAt !== null) {
-      markers.push({
-        time: snap(retest.approachAt, displaySeconds),
-        // On the side price came from, so the mark never covers the wick that
-        // did the testing.
-        position: bullish ? 'belowBar' : 'aboveBar',
-        shape: bullish ? 'arrowUp' : 'arrowDown',
-        color,
-        text: SCENARIO_TAGS[retest.scenario],
-      });
-    }
-
-    if (retest.resumptionAt !== null) {
-      markers.push({
-        time: snap(retest.resumptionAt, displaySeconds),
-        position: bullish ? 'belowBar' : 'aboveBar',
-        shape: 'circle',
-        color,
-        text: '',
-      });
-    }
+    const bucket = byBar.get(key);
+    if (bucket) bucket.at.push(retest);
+    else byBar.set(key, { time, bullish, at: [retest] });
   }
 
-  // `setMarkers` requires ascending time, and two retests genuinely can resolve
-  // into the same bucket once the chart is zoomed out to 15m or coarser.
+  const markers: SeriesMarker<UTCTimestamp>[] = [];
+  for (const { time, bullish, at } of byBar.values()) {
+    // Strongest first, so a merged mark is coloured and named by the retest
+    // most worth looking at rather than by whichever arrived first.
+    at.sort((a, b) => b.quality - a.quality);
+    const best = at[0];
+
+    markers.push({
+      time,
+      // On the side price came from, so the mark never covers the wick that did
+      // the testing.
+      position: bullish ? 'belowBar' : 'aboveBar',
+      // An arrow points the way the move resumed; a retest price never returned
+      // to has no such approach to point at.
+      shape: best.approachAt === null ? 'circle' : bullish ? 'arrowUp' : 'arrowDown',
+      color: fade(bullish ? THEME.up : THEME.down, opacityFor(best.quality)),
+      text: labelFor(at),
+    });
+  }
+
+  // `setMarkers` requires ascending time, and the map is in insertion order.
   return markers.sort((a, b) => (a.time as number) - (b.time as number));
 }
 
@@ -196,6 +191,11 @@ function snap(epochMs: number, displaySeconds: number): UTCTimestamp {
 
 /**
  * The tooltip: the numbers behind the label.
+ *
+ * Carries what the mark cannot — the band the retest was against, above all.
+ * With no lines on the chart this is the only place the zone is spelled out,
+ * which is the trade the marking makes: the levels stay legible, and the price
+ * pair is one hover away.
  *
  * `Opposing bars 0` is spelled out rather than hidden, because it is the
  * counter-intuitive case — a retest with no opposing-colour bar at all is the

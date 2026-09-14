@@ -97,7 +97,6 @@ import {
   describeRetest,
   mergeMarkers,
   retestMarkers,
-  retestPriceLines,
 } from './retest-overlay';
 import type { SimTrade } from '../strategy/strategy.models';
 
@@ -1405,8 +1404,6 @@ export class ChartStreamComponent {
   readonly levelsError = signal<string | null>(null);
 
   readonly retests = signal<ChartRetest[]>([]);
-  /** Band edges currently drawn, kept apart from `priceLines` so S/R can redraw alone. */
-  private retestLines: IPriceLine[] = [];
   private retestsInterval: ChartInterval | null = null;
   readonly showRetests = signal(false);
   readonly retestsLoading = signal(false);
@@ -1671,8 +1668,6 @@ export class ChartStreamComponent {
       this.chart?.remove();
       this.chart = undefined;
       this.candles = undefined;
-      // Both sets of handles belong to the series the chart just took with it.
-      this.retestLines = [];
       this.volume = undefined;
       this.markers = undefined;
     });
@@ -2000,24 +1995,12 @@ export class ChartStreamComponent {
   /**
    * Puts the current retests on the chart, replacing whatever was there.
    *
-   * Torn down and rebuilt for the same reason the levels are: a fetch returns
-   * a complete set, and at a couple of dozen price lines the rebuild is
-   * cheaper than the bookkeeping a diff would need to stay correct.
+   * Nothing to tear down: retests are marks, not price lines, and the marker
+   * plugin takes a whole replacement set. The tag row and the table carry the
+   * detail a band used to try to carry on the price scale.
    */
   private drawRetests(): void {
-    const series = this.candles;
-    if (!series) return;
-
-    for (const line of this.retestLines) series.removePriceLine(line);
-    this.retestLines = [];
-
-    if (this.showRetests()) {
-      for (const retest of this.retests()) {
-        for (const options of retestPriceLines(retest)) {
-          this.retestLines.push(series.createPriceLine(options));
-        }
-      }
-    }
+    if (!this.candles) return;
 
     // Retests and trades share one marker plugin, so either changing means
     // re-publishing both.

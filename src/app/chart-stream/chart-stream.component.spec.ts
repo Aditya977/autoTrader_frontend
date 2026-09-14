@@ -952,7 +952,7 @@ describe('ChartStreamComponent retests', () => {
     await settle();
 
     // Retests describe the series that produced them; carrying them onto a
-    // different day would draw confident, completely wrong bands.
+    // different day would mark confident, completely wrong bars.
     expect(retestsBar()).toBeNull();
 
     // And the held set is genuinely gone, not merely hidden: pressing RT has
@@ -1004,7 +1004,8 @@ describe('ChartStreamComponent retests', () => {
     // One plugin holds one list, so publishing the retest marks on their own
     // would silently erase the strategy's entry and exit arrows.
     const marks = host.chart().chartMarkers();
-    expect(marks.length).toBe(4);
+    // Entry, exit, and one mark for the retest — not one per timestamp on it.
+    expect(marks.length).toBe(3);
     expect(marks.some((m) => m.text?.startsWith('B '))).toBeTrue();
     expect(marks.some((m) => m.text === 'sweep')).toBeTrue();
     // Ascending time, as setMarkers requires.
