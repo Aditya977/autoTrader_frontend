@@ -170,6 +170,142 @@ export interface SessionLevelsQuery extends LevelTuning {
 }
 
 /**
+ * Which retest shape was detected — `retest__scenario` in the retest spec, and
+ * the same strings the backend emits.
+ *
+ * Several can apply to one retest at once (a wick sweep at a range boundary is
+ * two things), so {@link ChartRetest} carries both the winner and the full set.
+ */
+export type RetestScenario =
+  | 'exact'
+  | 'shallow'
+  | 'sweep'
+  | 'deep'
+  | 'time'
+  | 'dynamic'
+  | 'gap'
+  | 'range_boundary'
+  | 'none';
+
+/** How the level's band was derived. */
+export type RetestZoneOrigin =
+  | 'BREAKOUT_CANDLE'
+  | 'CONSOLIDATION'
+  | 'SWING'
+  | 'ROUND_NUMBER'
+  | 'MOVING_AVERAGE'
+  | 'GAP_EDGE'
+  | 'RANGE_BOUNDARY';
+
+export type RetestDirection = 'BULLISH' | 'BEARISH';
+
+/**
+ * One retest of one level.
+ *
+ * A level here is a **band**, not a line — `zoneLow`/`zoneHigh` are the band,
+ * and it is drawn as one. Collapsing it to a midpoint would recreate exactly
+ * the "price never touched my level" confusion the zone exists to remove:
+ * price genuinely does turn inside the band without printing the number.
+ *
+ * Every `*At` is epoch **milliseconds**, like a candle's `timestamp`, and needs
+ * the same snap to the interval on screen before it can be drawn.
+ */
+export interface ChartRetest {
+  zoneLow: number;
+  zoneHigh: number;
+  zoneOrigin: RetestZoneOrigin;
+  direction: RetestDirection;
+
+  /** Bar open time of the breakout that flipped the level. */
+  breakoutAt: number;
+  /** Deepest approach back toward the band; `null` for a time-based retest. */
+  approachAt: number | null;
+  /** Where price resolved in the breakout direction; `null` while unresolved. */
+  resumptionAt: number | null;
+
+  scenario: RetestScenario;
+  /** Everything that applied; `scenario` is the winner by the backend's priority. */
+  scenarios: RetestScenario[];
+  /** All three conditions met. A completed label — never true of a live retest. */
+  valid: boolean;
+  /** Approached and rejected, but not yet resolved. */
+  unresolved: boolean;
+  invalidation: string | null;
+  /** Signed distance from the approach extreme to the near band edge, in ATR. */
+  gapAtr: number;
+  touchedZone: boolean;
+  /** +1 beyond the band, 0 inside it, -1 through it. */
+  closeSide: 1 | 0 | -1;
+  /**
+   * Prior touches of this band. A **decay** term: each touch consumes resting
+   * orders, so a fourth touch is weaker than a first, not stronger.
+   */
+  touchCount: number;
+  /**
+   * Pullback bars closing against the breakout direction.
+   *
+   * `0` is a real, informative value rather than missing data — an all-green
+   * retest means the pullback was absorbed before it could complete a bar.
+   */
+  opposingBars: number;
+  /** `false` for a shallow retest: the resting orders were never filled. */
+  levelConsumed: boolean;
+  barsToResolve: number | null;
+  confluenceCount: number;
+  levelStrength: number;
+  /** Quality, 0–1 — what line weight and opacity follow. */
+  quality: number;
+  /** Visible only on a higher timeframe than the one requested. */
+  htfOnly: boolean;
+}
+
+export interface ChartRetests {
+  instrumentKey: string;
+  tradingsymbol: string;
+  interval: ChartInterval;
+  barsAnalysed: number;
+  from: string | null;
+  to: string | null;
+  /** Bumped when the backend changes how bands are derived; discard cached retests on a change. */
+  zoneVersion: number;
+  retests: ChartRetest[];
+  /** How many were found before `minQuality`/`includeUnresolved` trimmed the list. */
+  detected: number;
+}
+
+/** Tuning both retest endpoints accept; every field is defaulted server-side. */
+export interface RetestTuning {
+  /** Minimum breakout strength in ATR before the level counts as flipped. */
+  minBreakoutRangeAtr?: number;
+  approachWindow?: number;
+  resolutionWindow?: number;
+  /** `gap/ATR` past which a pullback is not a level interaction at all. */
+  maxGapAtr?: number;
+  /** Lowest quality worth drawing, 0–1. */
+  minQuality?: number;
+  /** Include retests that have not resolved yet — the only ones happening *now*. */
+  includeUnresolved?: boolean;
+  maxRetests?: number;
+}
+
+/** `POST /streamer/stream/retests` — retests for an instrument, no session needed. */
+export interface RetestsRequest extends RetestTuning {
+  instrument: InstrumentRequest;
+  interval?: ChartInterval;
+  /** Last trading day to analyse. Omit for "up to today". */
+  date?: string;
+  lookbackDays?: number;
+}
+
+/** `GET /streamer/stream/:id/retests` — retests in the series a session is drawing. */
+export interface SessionRetestsQuery extends RetestTuning {
+  /** Defaults to the session's own interval. */
+  interval?: ChartInterval;
+  /** Prior sessions to fold in behind the session's bars. `0` = its bars only. */
+  contextDays?: number;
+}
+
+/**
  * The `levels` field on a start request: plot support and resistance with this
  * chart, and keep them updated as it streams.
  *
