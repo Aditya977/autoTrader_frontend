@@ -4,6 +4,7 @@ import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import type {
+  ChartRetests,
   ApiErrorBody,
   ChartLevels,
   ChartSessionSnapshot,
@@ -11,7 +12,9 @@ import type {
   LevelsRequest,
   OptionChain,
   ResolvedInstrument,
+  RetestsRequest,
   SessionLevelsQuery,
+  SessionRetestsQuery,
   StartStreamRequest,
 } from './chart-stream.models';
 
@@ -125,6 +128,39 @@ export class ChartStreamApiService {
 
     return this.http
       .get<ChartLevels>(`${this.base}/streamer/stream/${sessionId}/levels`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Every retest of every level found for one instrument.
+   *
+   * The companion to {@link levels}: levels say where the lines are, retests
+   * say what happened when price came back to them.
+   */
+  retests(request: RetestsRequest): Observable<ChartRetests> {
+    return this.http
+      .post<ChartRetests>(`${this.base}/streamer/stream/retests`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The same, found in the bars **this session has published**.
+   *
+   * Works on any session, including one that has already finished — which is
+   * exactly when someone who has watched a replay through wants to know which
+   * of its levels actually held.
+   */
+  sessionRetests(sessionId: string, query: SessionRetestsQuery = {}): Observable<ChartRetests> {
+    // Only the fields actually set, for the same reason as `sessionLevels`:
+    // every one has a backend default, and an `undefined` serialised as the
+    // string "undefined" is a 400.
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null) params[key] = String(value);
+    }
+
+    return this.http
+      .get<ChartRetests>(`${this.base}/streamer/stream/${sessionId}/retests`, { params })
       .pipe(catchError(this.unwrap));
   }
 

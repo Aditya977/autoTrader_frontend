@@ -7,6 +7,8 @@ import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamSocketService } from './chart-stream-socket.service';
 import { environment } from '../../environments/environment';
 import type {
+  ChartRetest,
+  ChartRetests,
   ChartSessionSnapshot,
   ChartStreamEvent,
   StartStreamRequest,
@@ -682,5 +684,328 @@ describe('ChartStreamComponent — support & resistance', () => {
     expect(text()).toContain('Support/resistance unavailable');
     // The bars are fine, so the session must not read as failed.
     expect(text()).toContain('running');
+  });
+});
+
+describe('ChartStreamComponent retests', () => {
+  let fixture: ComponentFixture<HostComponent>;
+  let host: HostComponent;
+  let http: HttpTestingController;
+  let events: Subject<ChartStreamEvent>;
+
+  const retestsUrl = `${environment.apiBase}/streamer/stream/sess-1/retests`;
+
+  const RETEST: ChartRetest = {
+    zoneLow: 101.5,
+    zoneHigh: 102,
+    zoneOrigin: 'RANGE_BOUNDARY',
+    direction: 'BULLISH',
+    breakoutAt: OPEN_MS + 12 * MINUTE,
+    approachAt: OPEN_MS + 15 * MINUTE,
+    resumptionAt: OPEN_MS + 16 * MINUTE,
+    scenario: 'sweep',
+    scenarios: ['sweep', 'range_boundary'],
+    valid: true,
+    unresolved: false,
+    invalidation: null,
+    gapAtr: -0.42,
+    touchedZone: true,
+    closeSide: 1,
+    touchCount: 1,
+    opposingBars: 0,
+    levelConsumed: true,
+    barsToResolve: 1,
+    confluenceCount: 2,
+    levelStrength: 144_000,
+    quality: 0.82,
+    htfOnly: false,
+  };
+
+  const PENDING: ChartRetest = {
+    ...RETEST,
+    zoneLow: 95,
+    zoneHigh: 95.6,
+    zoneOrigin: 'SWING',
+    breakoutAt: OPEN_MS + 4 * MINUTE,
+    approachAt: OPEN_MS + 6 * MINUTE,
+    resumptionAt: null,
+    scenario: 'shallow',
+    scenarios: ['shallow'],
+    valid: false,
+    unresolved: true,
+    gapAtr: 0.51,
+    touchedZone: false,
+    touchCount: 3,
+    opposingBars: 1,
+    levelConsumed: false,
+    barsToResolve: null,
+    confluenceCount: 1,
+    quality: 0.31,
+  };
+
+  const response = (retests: ChartRetest[], interval = '1minute'): ChartRetests => ({
+    instrumentKey: 'NSE_FO|54321',
+    tradingsymbol: 'NIFTY24AUG24350CE',
+    interval: interval as ChartRetests['interval'],
+    barsAnalysed: 500,
+    from: null,
+    to: null,
+    zoneVersion: 1,
+    detected: retests.length,
+    retests,
+  });
+
+  async function settle(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  function startSession(request: StartStreamRequest): void {
+    host.request.set(request);
+    fixture.detectChanges();
+    http.expectOne(`${environment.apiBase}/streamer/stream/start`).flush(SNAPSHOT);
+    fixture.detectChanges();
+  }
+
+  const text = (): string => fixture.nativeElement.textContent as string;
+  const retestsButton = (): HTMLButtonElement =>
+    fixture.nativeElement.querySelector('.state button.rt') as HTMLButtonElement;
+  const retestsBar = (): HTMLElement | null =>
+    fixture.nativeElement.querySelector('.levels.retests') as HTMLElement | null;
+  const chips = (): HTMLElement[] =>
+    [...fixture.nativeElement.querySelectorAll('.levels.retests .lvl')] as HTMLElement[];
+
+  beforeEach(async () => {
+    events = new Subject<ChartStreamEvent>();
+
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ChartStreamSocketService, useValue: { connect: () => events.asObservable() } },
+      ],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(HostComponent);
+    host = fixture.componentInstance;
+    http = TestBed.inject(HttpTestingController);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    http.verify();
+    fixture.destroy();
+  });
+
+  it('cannot be pressed before a session exists', () => {
+    expect(retestsButton().disabled).toBeTrue();
+  });
+
+  it('leaves a fresh chart un-annotated until asked', () => {
+    startSession(REQUEST);
+    expect(retestsBar()).toBeNull();
+    expect(retestsButton().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('fetches this session own retests on the interval displayed', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+
+    // The session endpoint, not the standalone one: an annotation has to
+    // describe the series this chart is drawing.
+    const request = http.expectOne((r) => r.url === retestsUrl);
+    expect(request.request.method).toBe('GET');
+    expect(request.request.params.get('interval')).toBe('1minute');
+    // On a live chart the unresolved ones are the only ones happening now.
+    expect(request.request.params.get('includeUnresolved')).toBe('true');
+
+    request.flush(response([RETEST, PENDING]));
+    await settle();
+
+    expect(retestsBar()).toBeTruthy();
+    expect(text()).toContain('2 retests on 1m');
+    expect(text()).toContain('1 unresolved');
+  });
+
+  it('names the scenario and quality on each chip', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST, PENDING]));
+    await settle();
+
+    expect(chips().length).toBe(2);
+    expect(chips()[0].textContent).toContain('Wick sweep');
+    expect(chips()[0].textContent).toContain('82%');
+  });
+
+  it('marks an unresolved retest distinctly from a settled one', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST, PENDING]));
+    await settle();
+
+    expect(chips()[0].classList).not.toContain('pending');
+    expect(chips()[1].classList).toContain('pending');
+    // Direction, not above/below price — the opposite mapping to the S/R row.
+    expect(chips()[0].classList).toContain('up');
+  });
+
+  it('spells out the zero-opposing-bar case in the tooltip', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST, PENDING]));
+    await settle();
+
+    // A retest with no opposing-colour bar at all is the strongest form of the
+    // pattern, so a reader must see it was 0 rather than wonder if detection
+    // failed.
+    expect(chips()[0].getAttribute('title')).toContain('Opposing bars 0');
+    expect(chips()[1].getAttribute('title')).toContain('unconsumed');
+    expect(chips()[1].getAttribute('title')).toContain('Not yet resolved');
+  });
+
+  it('does not re-fetch when toggled off and straight back on', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST]));
+    await settle();
+    expect(retestsBar()).toBeTruthy();
+
+    retestsButton().click();
+    await settle();
+    expect(retestsBar()).toBeNull();
+
+    // The held set is still good for the interval on screen, so pressing RT
+    // again is instant rather than a second request.
+    retestsButton().click();
+    await settle();
+    expect(retestsBar()).toBeTruthy();
+    http.expectNone((r) => r.url === retestsUrl);
+  });
+
+  it('re-asks when the displayed interval changes', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST]));
+    await settle();
+
+    host.displaySeconds.set(300);
+    await settle();
+
+    // §4.7: a retest visible on one timeframe can be absent on another, so a
+    // set found on 1m says nothing about the 5m bars now on screen.
+    const request = http.expectOne((r) => r.url === retestsUrl);
+    expect(request.request.params.get('interval')).toBe('5minute');
+    request.flush(response([RETEST], '5minute'));
+    await settle();
+    expect(text()).toContain('1 retest on 5m');
+  });
+
+  it('drops annotations when a new session replaces the series', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST]));
+    await settle();
+    expect(retestsBar()).toBeTruthy();
+
+    host.request.set({ ...REQUEST, date: '2026-08-15' });
+    fixture.detectChanges();
+    http.expectOne(`${environment.apiBase}/streamer/stream/start`).flush(SNAPSHOT);
+    await settle();
+
+    // Retests describe the series that produced them; carrying them onto a
+    // different day would draw confident, completely wrong bands.
+    expect(retestsBar()).toBeNull();
+
+    // And the held set is genuinely gone, not merely hidden: pressing RT has
+    // to go back to the server rather than redraw the previous day's bands.
+    retestsButton().click();
+    fixture.detectChanges();
+    const refetch = http.expectOne((r) => r.url === retestsUrl);
+    refetch.flush(response([]));
+    await settle();
+  });
+
+  it('keeps the trade arrows when retests are drawn', async () => {
+    const trade: SimTrade = {
+      id: 1,
+      strategyId: 'strat-1',
+      instrumentKey: 'NSE_FO|54321',
+      tradingsymbol: 'NIFTY24AUG24350CE',
+      side: 'BUY',
+      status: 'CLOSED',
+      quantity: 75,
+      lots: 1,
+      lotSize: 75,
+      entryTime: OPEN_MS + 20 * MINUTE,
+      entryPrice: 100,
+      entryReason: 'signal',
+      stopPrice: null,
+      targetPrice: null,
+      exitTime: OPEN_MS + 25 * MINUTE,
+      exitPrice: 110,
+      exitReason: 'target',
+      exitReasonKind: 'TARGET',
+      grossPnl: 750,
+      costs: 50,
+      netPnl: 700,
+      netPnlPct: 10,
+      mae: -20,
+      mfe: 800,
+      barsHeld: 5,
+      features: {},
+    };
+
+    host.trades.set([trade]);
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([RETEST]));
+    await settle();
+
+    // One plugin holds one list, so publishing the retest marks on their own
+    // would silently erase the strategy's entry and exit arrows.
+    const marks = host.chart().chartMarkers();
+    expect(marks.length).toBe(4);
+    expect(marks.some((m) => m.text?.startsWith('B '))).toBeTrue();
+    expect(marks.some((m) => m.text === 'sweep')).toBeTrue();
+    // Ascending time, as setMarkers requires.
+    const times = marks.map((m) => m.time as number);
+    expect([...times].sort((a, b) => a - b)).toEqual(times);
+  });
+
+  it('reports a failed fetch on its own line, not as a chart failure', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http
+      .expectOne((r) => r.url === retestsUrl)
+      .flush(
+        { error: { code: 'SESSION_NOT_FOUND', message: 'No such session' } },
+        { status: 404, statusText: 'Not Found' },
+      );
+    await settle();
+
+    expect(text()).toContain('Retests unavailable');
+    expect(retestsBar()).toBeNull();
+  });
+
+  it('says nothing was found rather than showing an empty bar', async () => {
+    startSession(REQUEST);
+    retestsButton().click();
+    fixture.detectChanges();
+    http.expectOne((r) => r.url === retestsUrl).flush(response([]));
+    await settle();
+
+    expect(retestsBar()).toBeNull();
+    expect(text()).not.toContain('Retests unavailable');
   });
 });

@@ -24,6 +24,7 @@ import {
   type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type SeriesMarker,
   type PriceLineOptions,
   TickMarkType,
   type MouseEventParams,
@@ -52,34 +53,25 @@ import {
   TERMINAL_STATUSES,
   type ChartInterval,
   type ChartLevels,
+  type ChartRetest,
+  type ChartRetests,
   type ChartSessionSnapshot,
   type SessionLevelsQuery,
+  type SessionRetestsQuery,
   type StartStreamRequest,
   type SupportResistanceLevel,
 } from './chart-stream.models';
 import { markersFor } from '../strategy/trade-markers';
+import { THEME, fade } from './chart-theme';
+import {
+  SCENARIO_LABELS,
+  SCENARIO_TAGS,
+  describeRetest,
+  mergeMarkers,
+  retestMarkers,
+  retestPriceLines,
+} from './retest-overlay';
 import type { SimTrade } from '../strategy/strategy.models';
-
-/**
- * Chart colours, kept in TypeScript rather than read back out of CSS.
- *
- * The chart is a canvas: it cannot inherit a CSS custom property, so these
- * would have to be read with `getComputedStyle` at construction time and
- * re-read on every theme change. With a single committed theme (see
- * `styles.scss`) that indirection buys nothing, so the values are stated once
- * here and mirrored by the token of the same name.
- */
-const THEME = {
-  background: '#111820',
-  text: '#8b9bad',
-  grid: '#18222d',
-  border: '#212e3c',
-  crosshair: '#56718a',
-  up: '#26a17b',
-  down: '#ef5350',
-  upFaded: 'rgba(38, 161, 123, 0.4)',
-  downFaded: 'rgba(239, 83, 80, 0.4)',
-} as const;
 
 /**
  * How a support/resistance level is drawn.
@@ -115,15 +107,6 @@ function priceLineFor(level: SupportResistanceLevel): PriceLineOptions {
     axisLabelTextColor: '#06121d',
     title: pivot ? level.label : `${level.kind === 'SUPPORT' ? 'S' : 'R'}·${level.touches}`,
   };
-}
-
-/** `#26a17b` + alpha → `rgba(…)`, so one palette entry can carry several weights. */
-function fade(hex: string, alpha: number): string {
-  const value = Number.parseInt(hex.slice(1), 16);
-  const r = (value >> 16) & 255;
-  const g = (value >> 8) & 255;
-  const b = value & 255;
-  return `rgba(${r}, ${g}, ${b}, ${Math.min(1, Math.max(0, alpha)).toFixed(2)})`;
 }
 
 /** What the pointer is currently over, or the last bar when it is elsewhere. */
@@ -171,6 +154,17 @@ interface Readout {
           >
             {{ levelsLoading() ? 'S/R…' : 'S/R' }}
           </button>
+          <button
+            type="button"
+            class="ghost rt"
+            [class.on]="showRetests()"
+            [disabled]="!session()"
+            [attr.aria-pressed]="showRetests()"
+            title="Retests of support &amp; resistance"
+            (click)="toggleRetests()"
+          >
+            {{ retestsLoading() ? 'RT…' : 'RT' }}
+          </button>
           <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
             Stop
           </button>
@@ -216,7 +210,35 @@ interface Readout {
         </div>
       }
 
+      @if (retestBand(); as rt) {
+        <div class="levels retests">
+          <span class="tag">RT</span>
+          @for (retest of rt.shown; track retest.breakoutAt) {
+            <span
+              class="lvl"
+              [class.up]="retest.direction === 'BULLISH'"
+              [class.down]="retest.direction === 'BEARISH'"
+              [class.pending]="retest.unresolved"
+              [title]="describe(retest)"
+            >
+              {{ retest.direction === 'BULLISH' ? '▲' : '▼' }} {{ scenarioLabel(retest) }}
+              <i>{{ qualityLabel(retest) }}</i>
+            </span>
+          }
+          <span class="meta">
+            {{ rt.count }} retest{{ rt.count === 1 ? '' : 's' }} on {{ rt.interval }}
+            @if (rt.unresolved) {
+              · {{ rt.unresolved }} unresolved
+            }
+          </span>
+        </div>
+      }
+
       @if (levelsError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
+      @if (retestsError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -499,6 +521,27 @@ interface Readout {
       color: var(--text-faint);
     }
 
+    /* On the S/R row, ▲/▼ mean "above/below price", so up is resistance and
+       reads red. On the retest row they mean the breakout *direction*, so the
+       mapping is the plain one and has to be restated rather than inherited. */
+    .levels.retests .lvl.up {
+      color: var(--up);
+    }
+
+    .levels.retests .lvl.down {
+      color: var(--down);
+    }
+
+    .levels.retests .lvl {
+      cursor: help;
+      font-family: inherit;
+    }
+
+    /* Dotted, like the band on the chart: this one has not resolved yet. */
+    .levels.retests .lvl.pending {
+      border-bottom: 1px dotted currentColor;
+    }
+
     .error {
       margin: 0;
       padding: 0.55rem 0.9rem;
@@ -689,6 +732,14 @@ export class ChartStreamComponent {
   readonly levelsLoading = signal(false);
   readonly levelsError = signal<string | null>(null);
 
+  readonly retests = signal<ChartRetest[]>([]);
+  /** Band edges currently drawn, kept apart from `priceLines` so S/R can redraw alone. */
+  private retestLines: IPriceLine[] = [];
+  private retestsInterval: ChartInterval | null = null;
+  readonly showRetests = signal(false);
+  readonly retestsLoading = signal(false);
+  readonly retestsError = signal<string | null>(null);
+
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
   );
@@ -786,6 +837,24 @@ export class ChartStreamComponent {
     };
   });
 
+  /**
+   * The one line the RT bar shows: the most recent handful of retests.
+   *
+   * Newest first, as the backend returns them, and capped — the bands are
+   * already *on the chart*, which is where a level belongs. What a header adds
+   * is what just happened and how well it held.
+   */
+  readonly retestBand = computed(() => {
+    const retests = this.retests();
+    if (!this.showRetests() || !retests.length) return null;
+    return {
+      count: retests.length,
+      shown: retests.slice(0, 3),
+      unresolved: retests.filter((retest) => retest.unresolved).length,
+      interval: this.intervalLabel(),
+    };
+  });
+
   constructor() {
     effect(() => {
       const host = this.chartHost().nativeElement;
@@ -862,6 +931,11 @@ export class ChartStreamComponent {
         // on a stated interval server-side, so the set on screen now describes
         // a series that is no longer drawn — re-ask for the new one.
         if (this.showLevels()) this.refreshLevels();
+        // Retests are interval-bound in the same way, and more sharply: §4.7 of
+        // the spec is precisely that a retest visible on one timeframe can be
+        // absent on another, so a set found on 5m says nothing about the 15m
+        // bars now on screen.
+        if (this.showRetests()) this.refreshRetests();
       });
     });
 
@@ -870,6 +944,8 @@ export class ChartStreamComponent {
       this.chart?.remove();
       this.chart = undefined;
       this.candles = undefined;
+      // Both sets of handles belong to the series the chart just took with it.
+      this.retestLines = [];
       this.volume = undefined;
       this.markers = undefined;
     });
@@ -933,9 +1009,14 @@ export class ChartStreamComponent {
     // session's lines onto a different instrument would draw confident,
     // completely wrong numbers.
     this.clearLevels();
+    // Retests describe the same series, so they go with it.
+    this.clearRetests();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
     this.showLevels.set(request?.levels !== undefined);
+    // Never on by default: a retest is a completed label over history, not
+    // something a chart needs the moment it opens.
+    this.showRetests.set(false);
     this.redraw();
   }
 
@@ -1085,6 +1166,119 @@ export class ChartStreamComponent {
   }
 
   /**
+   * Shows or hides the retests.
+   *
+   * Same economy as {@link toggleLevels}: turning them on fetches only when
+   * what is held is stale or absent, so pressing RT twice does not cost two
+   * requests, and turning them off keeps the last set for an instant re-show.
+   */
+  toggleRetests(): void {
+    const next = !this.showRetests();
+    this.showRetests.set(next);
+    if (!next) {
+      this.drawRetests();
+      return;
+    }
+    if (this.retestsInterval === this.intervalName()) this.drawRetests();
+    else this.refreshRetests();
+  }
+
+  /** Scenario name for one retest — what the chip reads. */
+  protected scenarioLabel(retest: ChartRetest): string {
+    return SCENARIO_LABELS[retest.scenario];
+  }
+
+  /** Quality as a percentage, for the chip's trailing tag. */
+  protected qualityLabel(retest: ChartRetest): string {
+    return `${Math.round(retest.quality * 100)}%`;
+  }
+
+  /** The numbers behind the chip; see `retest-overlay.ts`. */
+  protected describe(retest: ChartRetest): string {
+    return describeRetest(retest);
+  }
+
+  /**
+   * Asks the session for retests on the interval currently displayed.
+   *
+   * The session endpoint rather than the standalone one, for the same reason
+   * the levels use it: it analyses the bars this session published — the
+   * series on screen — so an annotation cannot describe a different chart than
+   * the one it is drawn on.
+   *
+   * Unresolved retests are asked for explicitly. They are the ones happening
+   * *now*, which on a live chart is the only reason to be looking; the drawing
+   * keeps them visibly distinct rather than implying they resolved.
+   */
+  private refreshRetests(): void {
+    const sessionId = this.session()?.sessionId;
+    if (!sessionId) return;
+
+    this.retestsError.set(null);
+    this.retestsLoading.set(true);
+    this.api
+      .sessionRetests(sessionId, {
+        interval: this.intervalName(),
+        includeUnresolved: true,
+      } satisfies SessionRetestsQuery)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.retestsLoading.set(false);
+          this.applyRetests(result);
+        },
+        error: (e: ChartStreamError) => {
+          this.retestsLoading.set(false);
+          // Its own line, like `levelsError`: no retests is a chart without
+          // annotations, and reporting it as a chart failure would be a lie
+          // about the bars, which are fine.
+          this.retestsError.set(`Retests unavailable — ${describe(e)}`);
+        },
+      });
+  }
+
+  private applyRetests(result: ChartRetests): void {
+    this.retests.set(result.retests);
+    this.retestsInterval = result.interval;
+    this.retestsError.set(null);
+    this.drawRetests();
+  }
+
+  private clearRetests(): void {
+    this.retests.set([]);
+    this.retestsInterval = null;
+    this.retestsError.set(null);
+    this.drawRetests();
+  }
+
+  /**
+   * Puts the current retests on the chart, replacing whatever was there.
+   *
+   * Torn down and rebuilt for the same reason the levels are: a fetch returns
+   * a complete set, and at a couple of dozen price lines the rebuild is
+   * cheaper than the bookkeeping a diff would need to stay correct.
+   */
+  private drawRetests(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.retestLines) series.removePriceLine(line);
+    this.retestLines = [];
+
+    if (this.showRetests()) {
+      for (const retest of this.retests()) {
+        for (const options of retestPriceLines(retest)) {
+          this.retestLines.push(series.createPriceLine(options));
+        }
+      }
+    }
+
+    // Retests and trades share one marker plugin, so either changing means
+    // re-publishing both.
+    this.drawMarkers();
+  }
+
+  /**
    * Puts the current set on the chart, replacing whatever was there.
    *
    * Torn down and rebuilt rather than diffed: a `LEVELS` message is a complete
@@ -1113,7 +1307,21 @@ export class ChartStreamComponent {
    * duplicate every mark the first time a socket reconnected.
    */
   private drawMarkers(): void {
-    this.markers?.setMarkers(markersFor(this.trades(), this.displaySeconds()));
+    this.markers?.setMarkers(this.chartMarkers());
+  }
+
+  /**
+   * Every mark that belongs on the chart right now, from both sources.
+   *
+   * Separate from {@link drawMarkers} so that *what* is published is readable
+   * without a canvas: the plugin holds one list and `setMarkers` replaces it,
+   * so publishing either source alone would erase the other, and that is worth
+   * being able to assert rather than infer.
+   */
+  chartMarkers(): SeriesMarker<UTCTimestamp>[] {
+    const seconds = this.displaySeconds();
+    const retests = this.showRetests() ? retestMarkers(this.retests(), seconds) : [];
+    return mergeMarkers(markersFor(this.trades(), seconds), retests);
   }
 
   /** The backend's name for the bar size on screen. */
