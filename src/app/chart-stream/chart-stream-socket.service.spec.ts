@@ -49,6 +49,7 @@ const candle = (timestamp: number): ChartStreamEvent => ({
   close: 1,
   volume: 0,
   openInterest: null,
+  vwap: null,
   isSyntheticGap: false,
 });
 

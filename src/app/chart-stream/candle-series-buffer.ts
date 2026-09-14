@@ -12,6 +12,14 @@ export interface Bar {
   low: number;
   close: number;
   volume: number;
+  /**
+   * The backend's session VWAP at this bar, or `null` where it published none.
+   *
+   * Carried through rather than recomputed: it is cumulative from the session
+   * open, and a chart opened mid-session has no way to rebuild it. See
+   * `chart-indicators/vwap.ts`.
+   */
+  vwap: number | null;
 }
 
 /**
@@ -43,6 +51,7 @@ export class CandleSeriesBuffer {
       // A bar with no volume on the wire (an index carries none) is 0 here,
       // which the histogram simply draws as nothing.
       volume: event.volume ?? 0,
+      vwap: event.vwap ?? null,
     });
   }
 
@@ -80,6 +89,10 @@ export class CandleSeriesBuffer {
       open.low = Math.min(open.low, bar.low);
       open.close = bar.close;
       open.volume += bar.volume;
+      // The last bar's value, not a sum or an average of the bucket's: VWAP is
+      // already cumulative from the session open, so the newest bar in the
+      // bucket carries the figure the whole bucket ends on.
+      open.vwap = bar.vwap;
     }
     return [...buckets.values()].sort((a, b) => a.time - b.time);
   }

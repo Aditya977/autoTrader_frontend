@@ -7,7 +7,7 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
  * A component rather than markup copied into each page's header: the two pages
  * have genuinely different headers otherwise — one carries an instrument
  * picker's context, the other a dataset's — and extracting the whole bar to
- * share three links would couple them for no reason. The tab strip is the part
+ * share a handful of links would couple them for no reason. The tab strip is the part
  * that must not drift, so the tab strip is the part that is shared.
  */
 @Component({
@@ -18,6 +18,7 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
     <nav class="tabs" aria-label="Sections">
       <a routerLink="/chart" routerLinkActive="on" class="tab">Chart</a>
       <a routerLink="/backtest" routerLinkActive="on" class="tab">Backtest</a>
+      <a routerLink="/day-shapes" routerLinkActive="on" class="tab">Day shapes</a>
     </nav>
   `,
   styles: `

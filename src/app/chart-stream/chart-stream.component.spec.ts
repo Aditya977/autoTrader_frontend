@@ -74,6 +74,7 @@ const candle = (timestamp: number, close: number, volume = 1200): ChartStreamEve
   close,
   volume,
   openInterest: 45_000,
+  vwap: null,
   isSyntheticGap: false,
 });
 
@@ -493,8 +494,24 @@ describe('ChartStreamComponent — support & resistance', () => {
   }
 
   const text = (): string => fixture.nativeElement.textContent as string;
-  const levelsButton = (): HTMLButtonElement =>
-    fixture.nativeElement.querySelector('.state button.sr') as HTMLButtonElement;
+  /**
+   * The support/resistance toggle, which is now a row inside the overlay menu.
+   *
+   * It used to be its own button on the header. Six buttons stopped fitting at
+   * the width two legs get side by side, so every overlay moved behind one
+   * control — see chart-header-layout.spec.ts. This opens that menu if it is
+   * closed, so the tests below still read as pressing S/R.
+   */
+  const levelsButton = (): HTMLInputElement => {
+    const root = fixture.nativeElement as HTMLElement;
+    if (!root.querySelector('.menu')) {
+      (root.querySelector('.ind > button') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
+    const rows = [...root.querySelectorAll('.menu .opt')] as HTMLElement[];
+    const row = rows.find((r) => (r.textContent ?? '').includes('Support'));
+    return row?.querySelector('input') as HTMLInputElement;
+  };
   const levelsBar = (): HTMLElement | null =>
     fixture.nativeElement.querySelector('.levels') as HTMLElement | null;
 
@@ -768,8 +785,21 @@ describe('ChartStreamComponent retests', () => {
   }
 
   const text = (): string => fixture.nativeElement.textContent as string;
-  const retestsButton = (): HTMLButtonElement =>
-    fixture.nativeElement.querySelector('.state button.rt') as HTMLButtonElement;
+  /**
+   * RT was its own header button until the overlays menu replaced the row of
+   * them — the same move levelsButton documents above. Opens the menu if it
+   * is closed, so the tests below still read as pressing RT.
+   */
+  const retestsButton = (): HTMLInputElement => {
+    const root = fixture.nativeElement as HTMLElement;
+    if (!root.querySelector('.menu')) {
+      (root.querySelector('.ind > button') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
+    const rows = [...root.querySelectorAll('.menu .opt')] as HTMLElement[];
+    const row = rows.find((r) => (r.textContent ?? '').includes('Retests'));
+    return row?.querySelector('input') as HTMLInputElement;
+  };
   const retestsBar = (): HTMLElement | null =>
     fixture.nativeElement.querySelector('.levels.retests') as HTMLElement | null;
   const chips = (): HTMLElement[] =>
@@ -805,7 +835,7 @@ describe('ChartStreamComponent retests', () => {
   it('leaves a fresh chart un-annotated until asked', () => {
     startSession(REQUEST);
     expect(retestsBar()).toBeNull();
-    expect(retestsButton().getAttribute('aria-pressed')).toBe('false');
+    expect(retestsButton().checked).toBeFalse();
   });
 
   it('fetches this session own retests on the interval displayed', async () => {

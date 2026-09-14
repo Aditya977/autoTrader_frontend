@@ -142,6 +142,15 @@ export interface ChartCandleEvent {
   close: number;
   volume: number;
   openInterest: number | null;
+  /**
+   * Session VWAP as of this bar's close, or `null` where there is none.
+   *
+   * Cumulative from the session open and reset at each trading day, so a
+   * prior-day history bar carries that day's average rather than this one's.
+   * Draw the value as it arrives; do not accumulate it yourself and do not
+   * carry the last value across a `null`.
+   */
+  vwap: number | null;
   isSyntheticGap: boolean;
 }
 
@@ -700,6 +709,7 @@ The frontend never sees, stores or forwards an access token.
 | **A terminal `SESSION_STATUS` is not end-of-stream**    | It arrives *before* the backlog. Completing on it discards every bar behind it — the classic `replaySpeed: 0` empty chart. Wait for the lifecycle event. |
 | **`SESSION_STARTED` may already have fired**            | It is not replayed. Drive your UI from `SESSION_STATUS` (sent on every connect) and the REST snapshot.                                                                               |
 | **Index volume is always 0**                            | An index carries no traded volume on the wire. A volume histogram is meaningful for options and futures, flat for `INDEX`.                                                           |
+| **`vwap` is `null` for an index**                       | VWAP needs volume to weight by and an index reports none, so the field is `null` for the whole session. Draw no line at all rather than a flat one. It is also `null` on every bar before the session's first bar with volume. |
 | **`openInterest` is `null` for an index**               | Null means "this instrument has none", not "missing". Do not render it as 0.                                                                                                         |
 | **`isSyntheticGap: true`**                              | A minute with no trades, synthesised flat at the previous close so the series has no holes. Render it; consider styling it differently.                                              |
 | **`LIVE` only accepts `interval: '1minute'`**           | Anything else is a `400`. Aggregate coarser bars client-side from the 1-minute stream.                                                                                               |

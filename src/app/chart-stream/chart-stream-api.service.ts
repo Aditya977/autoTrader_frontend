@@ -11,6 +11,8 @@ import type {
   InstrumentRequest,
   LevelsRequest,
   OptionChain,
+  PreviousDayRangeRequest,
+  PreviousDayRangeResponse,
   ResolvedInstrument,
   RetestsRequest,
   SessionLevelsQuery,
@@ -41,10 +43,20 @@ export class ChartStreamApiService {
   private readonly http = inject(HttpClient);
   private readonly base = environment.apiBase; // e.g. 'http://localhost:3000'
 
-  /** Every underlying this backend synced — the first picker's options. */
-  underlyings(): Observable<{ underlyings: string[] }> {
+  /**
+   * The two symbol lists this backend synced, kept apart.
+   *
+   * `underlyings` is what can be charted and traded — an index with a chain
+   * behind it, which is what the picker beside the expiry and strike fields
+   * needs. `equities` is research data: a stock has no expiry and no strikes,
+   * so it can only be *captured*, and it belongs to the backtest tab's capture
+   * form rather than to this one.
+   */
+  underlyings(): Observable<{ underlyings: string[]; equities: string[] }> {
     return this.http
-      .get<{ underlyings: string[] }>(`${this.base}/streamer/instruments/underlyings`)
+      .get<{ underlyings: string[]; equities: string[] }>(
+        `${this.base}/streamer/instruments/underlyings`,
+      )
       .pipe(catchError(this.unwrap));
   }
 
@@ -161,6 +173,19 @@ export class ChartStreamApiService {
 
     return this.http
       .get<ChartRetests>(`${this.base}/streamer/stream/${sessionId}/retests`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * PDH/PDL/mid per trading day, from each day's actual 1D candle.
+   *
+   * Session-independent like {@link levels}, and fetched once rather than
+   * watched: the numbers come from days that have already closed, so nothing
+   * about them can change while the chart is open.
+   */
+  previousDayRange(request: PreviousDayRangeRequest): Observable<PreviousDayRangeResponse> {
+    return this.http
+      .post<PreviousDayRangeResponse>(`${this.base}/streamer/stream/previous-day-range`, request)
       .pipe(catchError(this.unwrap));
   }
 

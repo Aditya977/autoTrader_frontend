@@ -3,13 +3,7 @@ export type ChartSessionMode = 'LIVE' | 'TEST';
 export type ChartSessionStatus = 'STARTING' | 'RUNNING' | 'COMPLETED' | 'STOPPED' | 'ERROR';
 
 export type ChartInterval =
-  | '1minute'
-  | '3minute'
-  | '5minute'
-  | '15minute'
-  | '30minute'
-  | '1hour'
-  | '1day';
+  '1minute' | '3minute' | '5minute' | '15minute' | '30minute' | '1hour' | '1day';
 
 export type InstrumentType = 'INDEX' | 'EQUITY' | 'FUTURE' | 'CE' | 'PE';
 
@@ -319,6 +313,46 @@ export interface StreamLevelsOptions extends LevelTuning {
   refreshEveryBars?: number;
 }
 
+/* -------------------------------------------------------------------------
+ * Previous day range (PDH / PDL / mid)
+ * ---------------------------------------------------------------------- */
+
+/**
+ * The previous trading day's high, low and midpoint, for one session.
+ *
+ * Derived backend-side from that day's actual 1D candle — never by summing
+ * intraday bars — and fixed for the whole of `date`: nothing about it changes
+ * as the session streams, which is the point of drawing it.
+ */
+export interface PreviousDayRange {
+  /** The trading day these lines are drawn on, `YYYY-MM-DD`. */
+  date: string;
+  /** The trading day the numbers came from — the trading day before `date`. */
+  previousTradingDate: string;
+  /** Previous day's high. */
+  pdh: number;
+  /** Previous day's low. */
+  pdl: number;
+  /** `(pdh + pdl) / 2`. */
+  mid: number;
+}
+
+/** `POST /streamer/stream/previous-day-range` — PDH/PDL/mid, no session needed. */
+export interface PreviousDayRangeRequest {
+  instrument: InstrumentRequest;
+  /** Last trading day to return a range for. Omit for "today". */
+  date?: string;
+  /** Trading days to return ranges for, counted back from `date` inclusive. */
+  lookbackDays?: number;
+}
+
+export interface PreviousDayRangeResponse {
+  instrumentKey: string;
+  tradingsymbol: string;
+  /** One entry per requested trading day, ascending by `date`. */
+  ranges: PreviousDayRange[];
+}
+
 export interface StartStreamRequest {
   mode: ChartSessionMode;
   instrument: InstrumentRequest;
@@ -363,6 +397,16 @@ export interface ChartCandleEvent {
   close: number;
   volume: number;
   openInterest: number | null;
+  /**
+   * Session VWAP as of this bar's close, or `null` where there is none.
+   *
+   * Cumulative from the session open and reset each trading day, so a
+   * prior-day history bar carries that day's average rather than this one's.
+   * `null` until a bar with volume has closed — and therefore `null` for every
+   * bar of an index, which reports no volume at all. Draw nothing for a
+   * `null`; do not carry the previous value forward.
+   */
+  vwap: number | null;
   isSyntheticGap: boolean;
 }
 

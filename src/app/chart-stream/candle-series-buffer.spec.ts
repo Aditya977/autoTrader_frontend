@@ -25,6 +25,7 @@ const candle = (
   close,
   volume,
   openInterest: null,
+  vwap: null,
   isSyntheticGap: false,
   ...overrides,
 });
@@ -197,5 +198,37 @@ describe('series adapters', () => {
     const points = toVolumeData(buffer.snapshot(), 'GREEN', 'RED');
     expect(points.map((p) => p.color)).toEqual(['GREEN', 'RED']);
     expect(points.map((p) => p.value)).toEqual([500, 400]);
+  });
+});
+
+describe('VWAP carried through the buffer', () => {
+  it('keeps the value the backend stamped on each bar', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.add(candle(OPEN_MS, 100, 500, { vwap: 99.5 }));
+    buffer.add(candle(OPEN_MS + MINUTE, 101, 400, { vwap: 99.8 }));
+
+    expect(buffer.snapshot().map((bar) => bar.vwap)).toEqual([99.5, 99.8]);
+  });
+
+  /**
+   * VWAP is already cumulative from the session open, so a five-minute bucket
+   * ends on the figure its newest minute carries. Summing or averaging the
+   * minutes inside it would compound an average of an average.
+   */
+  it('takes the last minute value when bars are resampled, not a sum', () => {
+    const buffer = new CandleSeriesBuffer();
+    for (let i = 0; i < 5; i++) {
+      buffer.add(candle(OPEN_MS + i * MINUTE, 100 + i, 100, { vwap: 100 + i }));
+    }
+
+    const [bucket] = buffer.resampled(300);
+    expect(bucket.vwap).toBe(104);
+  });
+
+  it('reports no VWAP for an instrument that publishes none', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.add(candle(OPEN_MS, 100, 0, { vwap: null }));
+
+    expect(buffer.snapshot()[0].vwap).toBeNull();
   });
 });

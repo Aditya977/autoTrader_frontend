@@ -78,6 +78,20 @@ export function bucketStartMs(epochMs: number, seconds: number): number {
 }
 
 /**
+ * The IST trading date a bar belongs to, as `YYYY-MM-DD`.
+ *
+ * Offset arithmetic rather than an `Intl` format, to mirror the backend's
+ * `istDateKey` character for character. That is not a micro-optimisation: the
+ * backend keys each previous-day range by *its* notion of the trading day, and
+ * the browser looks that key up by *its* own. Two implementations that agree
+ * today but round a midnight instant differently would annotate a chart with
+ * the wrong day's high, and the numbers would still look plausible. IST has no
+ * DST, so a fixed offset is exact.
+ */
+export const istDateKey = (epochSeconds: number): string =>
+  new Date(epochSeconds * 1000 + IST_OFFSET_MS).toISOString().slice(0, 10);
+
+/**
  * `Intl` formatters are expensive to construct and are rebuilt on every
  * crosshair move if they are not cached — several hundred times a second while
  * the pointer sweeps a chart.
@@ -108,12 +122,10 @@ const dayAndTime = new Intl.DateTimeFormat('en-IN', {
 });
 
 /** `09:15` — the ordinary tick label along the time axis. */
-export const formatIstTime = (epochSeconds: number): string =>
-  timeOnly.format(epochSeconds * 1000);
+export const formatIstTime = (epochSeconds: number): string => timeOnly.format(epochSeconds * 1000);
 
 /** `14 Aug` — for a daily series, and for the first bar of each new day. */
-export const formatIstDay = (epochSeconds: number): string =>
-  dayOnly.format(epochSeconds * 1000);
+export const formatIstDay = (epochSeconds: number): string => dayOnly.format(epochSeconds * 1000);
 
 /** `14 Aug 2026, 09:15 IST` — the tooltip's headline and the header readout. */
 export const formatIstStamp = (epochSeconds: number): string =>
