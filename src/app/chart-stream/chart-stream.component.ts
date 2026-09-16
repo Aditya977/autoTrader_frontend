@@ -101,9 +101,12 @@ import {
 import { MarketEnginePanelComponent } from '../market-engine/market-engine-panel.component';
 import {
   marketStateMarkers,
+  marksAtBar,
   protectedLines,
+  withinSeries,
   zoneLines,
 } from '../market-engine/market-engine-overlay';
+import { explainMark, type MarkNote } from '../market-engine/market-engine-glossary';
 import type {
   ChartSet,
   EventLogIngestResult,
@@ -603,6 +606,15 @@ interface Readout {
                 <dd>{{ t.readout.volume }}</dd>
               </div>
             </dl>
+            <!-- What the engine mark on this candle means, so a label is never a riddle. -->
+            @for (note of engineNotes(); track $index) {
+              <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
+                <div class="t-note-title">{{ note.up ? '↑' : '↓' }} {{ note.title }}</div>
+                @for (line of note.lines; track $index) {
+                  <p>{{ line }}</p>
+                }
+              </div>
+            }
           </div>
         }
 
@@ -1238,6 +1250,40 @@ interface Readout {
 
     .tooltip dd.down {
       color: var(--down);
+    }
+
+    /* A marked candle's card carries sentences, so it may widen — but no further
+       than a comfortable line length. */
+    .tooltip:has(.t-note) {
+      width: 300px;
+      /* The panel clips, so the card must fit inside the chart's height. */
+      max-height: calc(100% - 16px);
+      overflow: hidden;
+    }
+
+    .t-note {
+      margin-top: 0.4rem;
+      padding-top: 0.35rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .t-note-title {
+      font-weight: 600;
+      margin-bottom: 0.15rem;
+    }
+
+    .t-note.up .t-note-title {
+      color: var(--up);
+    }
+
+    .t-note.down .t-note-title {
+      color: var(--down);
+    }
+
+    .t-note p {
+      margin: 0.15rem 0 0;
+      color: var(--text-muted);
+      line-height: 1.4;
     }
 
     .empty {
@@ -2373,7 +2419,16 @@ export class ChartStreamComponent {
    * duplicate every mark the first time a socket reconnected.
    */
   private drawMarkers(): void {
-    this.markers?.setMarkers(this.chartMarkers());
+    if (!this.markers) return;
+    this.markersClippedAt = this.firstBarTime();
+    this.markers.setMarkers(this.chartMarkers());
+  }
+
+  /** The left edge {@link drawMarkers} last clipped at — see {@link withinSeries}. */
+  private markersClippedAt: number | null = null;
+
+  private firstBarTime(): number | null {
+    return (this.drawn[0]?.time as number | undefined) ?? null;
   }
 
   /**
@@ -2391,8 +2446,25 @@ export class ChartStreamComponent {
       this.showMarketEngine() && this.marketEngine()
         ? marketStateMarkers(this.marketEngine()?.readings ?? [], seconds)
         : [];
-    return mergeMarkers(markersFor(this.trades(), seconds), retests, engine);
+    // Clipped to the drawn bars: a mark with no bar of its own is pinned to the
+    // nearest one by the chart, which stacked ten days of engine history on the
+    // first candle.
+    return withinSeries(
+      mergeMarkers(markersFor(this.trades(), seconds), retests, engine),
+      this.firstBarTime(),
+    );
   }
+
+  /**
+   * The engine marks on the hovered bar, explained — what the hover card adds
+   * beneath the prices. Empty when the engine is off or the bar carries no mark.
+   */
+  readonly engineNotes = computed<MarkNote[]>(() => {
+    const bar = this.hovered();
+    const engine = this.marketEngine();
+    if (!bar || !engine || !this.showMarketEngine()) return [];
+    return marksAtBar(engine.readings, this.displaySeconds(), bar.time as number).map(explainMark);
+  });
 
   /** The backend's name for the bar size on screen. */
   private intervalName(): ChartInterval {
@@ -2423,6 +2495,10 @@ export class ChartStreamComponent {
     if (!this.candles || !this.volume) return;
     this.drawn = this.buffer.resampled(this.displaySeconds());
     this.drawnByTime = new Map(this.drawn.map((bar) => [bar.time as number, bar]));
+    // Marks are clipped to the first drawn bar, so a series whose left edge
+    // moved — the backlog arriving after the marks, or a longer history — has
+    // to republish them or the clip is taken against the old edge.
+    if (this.firstBarTime() !== this.markersClippedAt) this.drawMarkers();
 
     // Which bars open a new IST trading day, so the axis can label them with a
     // date instead of a time. Lightweight Charts decides that itself — in UTC,
@@ -3134,12 +3210,16 @@ export class ChartStreamComponent {
     }
 
     // Offset from the cursor and flipped near the right edge, so the tooltip
-    // never covers the bar it is describing.
+    // never covers the bar it is describing. A card explaining an engine mark
+    // is wider and taller, so it flips sooner and is pinned to the top of the
+    // chart, where it has the most room to grow down.
     const width = this.chartHost().nativeElement.clientWidth;
-    const flip = point.x > width - 170;
+    const explained = this.engineNotes().length > 0;
+    const cardWidth = explained ? 300 : 156;
+    const flip = point.x > width - cardWidth - 14;
     this.tooltipAt.set({
-      x: flip ? Math.max(8, point.x - 156) : point.x + 16,
-      y: Math.max(8, point.y - 12),
+      x: flip ? Math.max(8, point.x - cardWidth - 16) : point.x + 16,
+      y: explained ? 8 : Math.max(8, point.y - 12),
     });
   };
 

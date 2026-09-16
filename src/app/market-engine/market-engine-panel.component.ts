@@ -1,13 +1,27 @@
 import { Component, computed, input, output } from '@angular/core';
+import { TipDirective } from '../shared/tip.directive';
 import {
-  CHECKLIST_LABELS,
-  STATE_LABELS,
-  describeDeveloping,
-  describeReading,
-} from './market-engine-overlay';
+  GRADE_HELP,
+  GRADE_SCALE_HELP,
+  MARK_MODIFIER_KEY,
+  MARK_STATE_KEY,
+  REACTION_HELP,
+  ROLE_HELP,
+  STATE_HELP,
+  cprHelp,
+  dayTypeHelp,
+  explainGrade,
+  flagHelp,
+  gapHelp,
+  poolHelp,
+  zoneHelp,
+  type CheckStatus,
+} from './market-engine-glossary';
+import { STATE_LABELS, describeDeveloping, describeReading } from './market-engine-overlay';
 import type {
   ChartSet,
   EventLogIngestResult,
+  LegCharacter,
   MarketEngineResult,
   MarketReading,
   ParityCheckResult,
@@ -40,6 +54,7 @@ import type {
 @Component({
   selector: 'app-market-engine-panel',
   standalone: true,
+  imports: [TipDirective],
   template: `
     @if (result(); as engine) {
       <section class="engine" [attr.aria-label]="'Market engine reading'">
@@ -54,7 +69,7 @@ import type {
                 type="button"
                 [attr.aria-pressed]="engine.chartSet === choice.value"
                 [class.on]="engine.chartSet === choice.value"
-                [title]="choice.hint"
+                [appTip]="choice.hint"
                 (click)="chartSetChange.emit(choice.value)"
               >
                 {{ choice.label }}
@@ -63,83 +78,172 @@ import type {
           </div>
         </header>
 
+        <!--
+          The key to the chart's marks. Collapsed, because a person reads it
+          once; hovering a marked candle explains that one mark in full.
+        -->
+        <details class="key">
+          <summary>How to read the chart marks</summary>
+          <p class="key-note">
+            A mark appears where the {{ engine.timeframes['setup'] }} state <em>changes</em>. Hover a
+            marked candle for the full explanation of that mark.
+          </p>
+          <dl class="key-list">
+            @for (row of markStateKey; track row.sample) {
+              <div>
+                <dt>{{ row.sample }}</dt>
+                <dd>{{ row.meaning }}</dd>
+              </div>
+            }
+          </dl>
+          <dl class="key-list">
+            @for (row of markModifierKey; track row.sample) {
+              <div>
+                <dt>{{ row.sample }}</dt>
+                <dd>{{ row.meaning }}</dd>
+              </div>
+            }
+          </dl>
+          <p class="key-note">
+            Solid lines are protected levels — a close through one changes that timeframe's
+            structure. Dotted lines are the nearest order blocks (OB) and fair value gaps (FVG).
+          </p>
+        </details>
+
         @if (latest(); as reading) {
           <p class="session">
             <span>{{ reading.session.date }}</span>
             @if (reading.session.gapKind) {
-              <span class="tag">{{ gapLabel(reading) }}</span>
+              <span class="tag" [appTip]="gapHelp(reading.session.gapKind)">{{ gapLabel(reading) }}</span>
             }
             @if (reading.session.cprBand) {
-              <span class="tag">CPR {{ reading.session.cprBand }}</span>
+              <span class="tag" [appTip]="cprHelp(reading.session.cprBand)">
+                CPR {{ reading.session.cprBand }}
+              </span>
             }
-            <span class="tag">{{ dayLabel(reading) }}</span>
+            <span class="tag" [appTip]="dayTypeHelp(reading.session.dayType)">
+              {{ dayLabel(reading) }}
+            </span>
             @for (flag of reading.session.flags; track flag) {
-              <span class="tag warn">{{ flagLabel(flag) }}</span>
+              <span class="tag warn" [appTip]="flagHelp(flag)">{{ flagLabel(flag) }}</span>
             }
             @for (name of reading.session.events; track name) {
-              <span class="tag warn">{{ name }}</span>
+              <span class="tag warn" appTip="A scheduled market event on this date.">{{ name }}</span>
             }
           </p>
 
           <ol class="cascade">
             @for (row of cascade(); track row.role) {
-              <li [class]="'role-' + row.role" [title]="row.hint">
-                <span class="tf">{{ row.view.timeframe }}</span>
+              <li [class]="'role-' + row.role">
+                <span class="tf" [appTip]="row.hint">{{ row.view.timeframe }}</span>
                 <span class="body">
-                  <b [class.up]="row.up" [class.down]="row.down">{{ label(row.view) }}</b>
+                  <b
+                    [class.up]="row.up"
+                    [class.down]="row.down"
+                    [appTip]="stateHelp[row.view.state]"
+                  >
+                    {{ label(row.view) }}
+                  </b>
                   <span class="sub">
-                    {{ row.role }}
+                    <span [appTip]="row.hint">{{ row.role }}</span>
                     @if (row.view.protectedLevel !== null) {
-                      · protects {{ row.view.protectedLevel }}
+                      ·
+                      <span
+                        appTip="The price whose close-through changes this timeframe's structure."
+                      >
+                        protects {{ row.view.protectedLevel }}
+                      </span>
                     }
                     @if (row.view.pullbackDepth !== null) {
-                      · {{ pct(row.view.pullbackDepth) }} retraced
+                      ·
+                      <span
+                        appTip="How much of the last impulse move has been given back. Past about 79% the trend is treated as at risk."
+                      >
+                        {{ pct(row.view.pullbackDepth) }} retraced
+                      </span>
                     }
-                    @if (row.view.leg) {
-                      · {{ row.view.leg.character.toLowerCase() }} leg
+                    @if (row.view.leg; as leg) {
+                      ·
+                      <span [appTip]="legHelp(leg.character)">
+                        {{ leg.character.toLowerCase() }} leg
+                      </span>
                     }
                     @if (row.view.expiresAfterBars !== null) {
-                      · {{ row.view.barsInState }}/{{ row.view.expiresAfterBars }} bars
+                      ·
+                      <span
+                        [appTip]="
+                          'Setups expire. This one has lasted ' +
+                          row.view.barsInState +
+                          ' of the ' +
+                          row.view.expiresAfterBars +
+                          ' bars it is allowed before lapsing to range.'
+                        "
+                      >
+                        {{ row.view.barsInState }}/{{ row.view.expiresAfterBars }} bars
+                      </span>
                     }
                   </span>
                 </span>
               </li>
             }
             <li class="role-reaction">
-              <span class="tf">{{ engine.timeframes['reaction'] }}</span>
+              <span class="tf" [appTip]="roleHelp['reaction']">{{ engine.timeframes['reaction'] }}</span>
               <span class="body">
-                <b [class.muted]="reading.reaction === 'ASLEEP'">{{ reactionLabel(reading) }}</b>
+                <b [class.muted]="reading.reaction === 'ASLEEP'" [appTip]="reactionHelp[reading.reaction]">
+                  {{ reactionLabel(reading) }}
+                </b>
                 <span class="sub">reaction · wakes only at the trigger level</span>
               </span>
             </li>
           </ol>
 
           @if (developing(); as line) {
-            <p class="developing">{{ line }}</p>
+            <p
+              class="developing"
+              appTip="The higher-timeframe candle that has not closed yet. Its high and low so far are real; its close does not exist yet, so it never changes a state."
+            >
+              {{ line }}
+            </p>
           }
 
           @if (reading.transition) {
-            <p class="transition">
+            <p
+              class="transition"
+              appTip="The two highest timeframes point different ways. Until they agree, no reading can grade above C."
+            >
               Context and structure disagree — market in transition, readings cap at C.
             </p>
           }
 
           @if (reading.sequence.length) {
-            <p class="sequence">{{ reading.sequence.join(' → ') }}</p>
+            <p class="sequence" appTip="The named events that led to this reading, oldest first.">
+              {{ reading.sequence.join(' → ') }}
+            </p>
           }
 
           <!-- Where the stops are. The swept pool leads: it is why the move had fuel. -->
           @if (reading.liquidity.tookPool || reading.liquidity.resting.length) {
             <div class="block">
-              <p class="block-head">Liquidity</p>
+              <p
+                class="block-head"
+                appTip="Prices where stop orders cluster. Price is often drawn to them, and a sweep of one before a move is a sign of strength. ▲ above price, ▼ below."
+              >
+                Liquidity
+              </p>
               @if (reading.liquidity.tookPool; as took) {
-                <p class="took">{{ tookLabel(took) }}</p>
+                <p
+                  class="took"
+                  appTip="The stop cluster this move ran through first. ATR through = how far past the level price traded, in average bar ranges."
+                >
+                  {{ tookLabel(took) }}
+                </p>
               }
               <ul class="rows">
                 @for (pool of reading.liquidity.resting; track pool.source + pool.price) {
                   <li
                     [class.up]="pool.side === 'BUY_SIDE'"
                     [class.down]="pool.side === 'SELL_SIDE'"
+                    [appTip]="poolHelp(pool.source, pool.side)"
                   >
                     <span>{{ pool.side === 'BUY_SIDE' ? '▲' : '▼' }} {{ pool.price }}</span>
                     <i>{{ poolText(pool.source, pool.touches) }}</i>
@@ -152,13 +256,19 @@ import type {
           <!-- Zones, with status as of this reading — never as of the end of the day. -->
           @if (reading.zones.length) {
             <div class="block">
-              <p class="block-head">Zones</p>
+              <p
+                class="block-head"
+                appTip="Price areas the market is likely to react at: order blocks (OB) and fair value gaps (FVG), with their status as of this reading."
+              >
+                Zones
+              </p>
               <ul class="rows">
                 @for (zone of reading.zones; track zone.kind + zone.createdAt + zone.low) {
                   <li
                     [class.up]="zone.direction === 'BULLISH'"
                     [class.down]="zone.direction === 'BEARISH'"
                     [class.spent]="zone.status === 'MITIGATED'"
+                    [appTip]="zoneHelp(zone)"
                   >
                     <span>{{ zone.low }} – {{ zone.high }}</span>
                     <i>
@@ -177,36 +287,72 @@ import type {
             </div>
           }
 
-          @if (reading.grade; as grade) {
-            <div class="grade" [class]="'g-' + grade.value">
-              <div class="letter" [attr.aria-label]="'Grade ' + grade.value">
-                {{ grade.value }}
+          <!--
+            The grade, said in sentences. The letter alone, four symbol-coded
+            lists and a terse cap reason were each correct and together
+            unreadable: this states what is being graded, the score, why the
+            letter is not higher, and each check with the reason it landed there.
+          -->
+          @if (gradeView(); as g) {
+            <div class="grade" [class]="'g-' + g.grade">
+              <p class="block-head" [appTip]="gradeScaleHelp">Setup grade</p>
+
+              <div class="grade-head">
+                <div class="letter" [attr.aria-label]="'Grade ' + g.grade" [appTip]="gradeHelp[g.grade]">
+                  {{ g.grade }}
+                </div>
+                <div class="grade-sum">
+                  <b>
+                    {{ g.verdict }}
+                    @if (g.subject) {
+                      <span class="subject">{{ g.subject }}</span>
+                    }
+                  </b>
+                  <span class="score">{{ g.score }}</span>
+                </div>
               </div>
+
+              @if (g.whyNotHigher) {
+                <p class="why">{{ g.whyNotHigher }}</p>
+              }
+
               <ul class="checks">
-                @for (item of grade.present; track item) {
-                  <li class="yes">{{ checklist(item) }}</li>
-                }
-                @for (item of grade.partial; track item) {
-                  <li class="part">{{ checklist(item) }}</li>
-                }
-                @for (item of grade.missing; track item) {
-                  <li class="no">{{ checklist(item) }}</li>
-                }
-                @for (item of grade.unavailable; track item) {
-                  <li class="na">{{ checklist(item) }} — no data on this feed</li>
+                @for (check of g.rows; track check.item) {
+                  <li [class]="check.status">
+                    <span class="pill" [appTip]="statusHelp[check.status]">
+                      {{ statusLabel[check.status] }}
+                    </span>
+                    <span class="check-body">
+                      <span class="check-name" [appTip]="check.help">{{ check.label }}</span>
+                      <span class="check-detail">{{ check.detail }}</span>
+                    </span>
+                  </li>
                 }
               </ul>
+
+              @if (g.toReachA.length) {
+                <p class="reach">
+                  <span>To reach A, these still need to pass:</span>
+                  {{ g.toReachA.join(' · ') }}
+                </p>
+              }
             </div>
-            @if (grade.capReason) {
-              <p class="cap">Capped: {{ grade.capReason }}</p>
-            }
           }
 
           @if (reading.setup.invalidatedBy) {
-            <p class="invalid">Invalidated by {{ reading.setup.invalidatedBy }}</p>
+            <div
+              class="invalid"
+              appTip="The price action that would prove this reading wrong. If it happens, the state changes at the next bar close."
+            >
+              <p class="block-head">Invalidation</p>
+              <p>
+                This {{ reading.setup.timeframe }} reading is cancelled by a
+                <b>{{ reading.setup.invalidatedBy }}</b>.
+              </p>
+            </div>
           }
 
-          <p class="foot" [title]="tooltip()">
+          <p class="foot" [appTip]="tooltip()">
             {{ engine.readings.length }} of {{ engine.produced }} readings ·
             {{ engine.barsAnalysed }} bars · last {{ asTime(reading.at) }}
           </p>
@@ -220,13 +366,28 @@ import type {
             <summary>Research — event log, parity, validation</summary>
 
             <div class="actions">
-              <button type="button" [disabled]="researchBusy()" (click)="ingest.emit()">
+              <button
+                type="button"
+                [disabled]="researchBusy()"
+                (click)="ingest.emit()"
+                appTip="Save this session's engine events to the database, so later runs can be compared with them. Events already stored are skipped."
+              >
                 Store events
               </button>
-              <button type="button" [disabled]="researchBusy()" (click)="parity.emit()">
+              <button
+                type="button"
+                [disabled]="researchBusy()"
+                (click)="parity.emit()"
+                appTip="Replay the session and check the engine produces exactly the events that were stored. A mismatch means a rule changed."
+              >
                 Check replay parity
               </button>
-              <button type="button" [disabled]="researchBusy()" (click)="validate.emit()">
+              <button
+                type="button"
+                [disabled]="researchBusy()"
+                (click)="validate.emit()"
+                appTip="Measure what price actually did after each label over many past sessions, against a same-time-of-day baseline. Slow: it reads a long window."
+              >
                 Run validation
               </button>
               @if (researchBusy()) {
@@ -269,12 +430,14 @@ import type {
                 <table>
                   <thead>
                     <tr>
-                      <th>Label</th>
-                      <th>n</th>
-                      <th>3b</th>
-                      <th>6b</th>
-                      <th>12b</th>
-                      <th>+1 first</th>
+                      <th appTip="The event type or grade being measured.">Label</th>
+                      <th appTip="Independent samples, after overlapping forward windows were thinned out.">n</th>
+                      <th appTip="Edge 3 bars later, in ATR: how much further price went the label's way than the baseline did.">3b</th>
+                      <th appTip="Edge 6 bars later, in ATR.">6b</th>
+                      <th appTip="Edge 12 bars later, in ATR.">12b</th>
+                      <th appTip="How much more often price rose 1 ATR before falling 1 ATR, compared with the baseline, in percentage points. Upward regardless of the label's direction.">
+                        +1 first
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -295,11 +458,11 @@ import type {
                 <table>
                   <thead>
                     <tr>
-                      <th>State</th>
-                      <th>n</th>
-                      <th>resumed</th>
-                      <th>reversed</th>
-                      <th>ranged</th>
+                      <th appTip="A setup state, and how it resolved afterwards.">State</th>
+                      <th appTip="How many times the state occurred.">n</th>
+                      <th appTip="Share of times the trend carried on.">resumed</th>
+                      <th appTip="Share of times the trend turned the other way.">reversed</th>
+                      <th appTip="Share of times price went sideways.">ranged</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -458,72 +621,191 @@ import type {
         font-family: ui-monospace, Menlo, Consolas, monospace;
         font-size: 11px;
       }
+      .has-tip {
+        cursor: help;
+        text-decoration: underline dotted rgba(139, 155, 173, 0.45);
+        text-underline-offset: 3px;
+      }
+      /* Buttons and whole rows announce themselves already; underlining them is noise. */
+      button.has-tip,
+      li.has-tip,
+      .letter.has-tip,
+      .invalid.has-tip {
+        text-decoration: none;
+      }
+      .key {
+        border: 1px solid #212e3c;
+        border-radius: 6px;
+        padding: 4px 8px;
+        background: #111820;
+      }
+      .key summary {
+        cursor: pointer;
+        color: #8b9bad;
+        font-size: 11px;
+      }
+      .key-note {
+        margin: 6px 0;
+        color: #8b9bad;
+        font-size: 11px;
+      }
+      .key-list {
+        margin: 6px 0;
+        display: grid;
+        gap: 3px;
+      }
+      .key-list div {
+        display: grid;
+        grid-template-columns: 130px 1fr;
+        gap: 8px;
+        font-size: 11px;
+      }
+      .key-list dt {
+        color: #d6e0ea;
+        font-family: ui-monospace, Menlo, Consolas, monospace;
+      }
+      .key-list dd {
+        margin: 0;
+        color: #8b9bad;
+      }
       .grade {
         display: flex;
-        gap: 10px;
-        align-items: flex-start;
+        flex-direction: column;
+        gap: 6px;
         border-top: 1px solid #212e3c;
-        padding-top: 8px;
+        padding-top: 6px;
+      }
+      .grade-head {
+        display: flex;
+        gap: 10px;
+        align-items: center;
       }
       .letter {
         font-size: 26px;
         font-weight: 700;
         line-height: 1;
-        min-width: 28px;
+        min-width: 32px;
+        padding: 3px 0;
         text-align: center;
+        border-radius: 6px;
+        background: #18222d;
       }
-      .g-A .letter {
+      .g-A .letter,
+      .g-A .grade-sum b {
         color: #26a17b;
       }
-      .g-B .letter {
+      .g-B .letter,
+      .g-B .grade-sum b {
         color: #e9b44c;
       }
-      .g-C .letter {
+      .g-C .letter,
+      .g-C .grade-sum b {
         color: #ef5350;
+      }
+      .grade-sum {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .grade-sum b {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .subject {
+        color: #8b9bad;
+        font-weight: 400;
+        font-size: 11px;
+        margin-left: 4px;
+      }
+      .score {
+        color: #8b9bad;
+        font-size: 11px;
+      }
+      .why {
+        margin: 0;
+        padding: 5px 8px;
+        border-left: 3px solid #2f4459;
+        background: #111820;
+        color: #d6e0ea;
+        font-size: 11px;
       }
       .checks {
         list-style: none;
         margin: 0;
         padding: 0;
-        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
       }
       .checks li {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
         font-size: 11px;
       }
-      .checks li::before {
-        display: inline-block;
-        width: 14px;
+      /* A word, not a symbol: "~" was read as "roughly agrees". */
+      .pill {
+        flex: none;
+        min-width: 50px;
+        text-align: center;
+        padding: 1px 0;
+        border-radius: 8px;
+        font-size: 10px;
+        font-weight: 600;
+        text-decoration: none;
       }
-      .checks .yes {
+      .check-body {
+        display: flex;
+        flex-direction: column;
+      }
+      .check-name {
+        color: #d6e0ea;
+        align-self: flex-start;
+      }
+      .check-detail {
+        color: #8b9bad;
+      }
+      .checks .pass .pill {
+        background: rgba(38, 161, 123, 0.16);
         color: #26a17b;
       }
-      .checks .yes::before {
-        content: '✓';
-      }
-      .checks .part {
+      .checks .partial .pill {
+        background: rgba(233, 180, 76, 0.16);
         color: #e9b44c;
       }
-      .checks .part::before {
-        content: '~';
-      }
-      .checks .no {
+      .checks .fail .pill {
+        background: rgba(239, 83, 80, 0.16);
         color: #ef5350;
       }
-      .checks .no::before {
-        content: '✕';
+      /* Not a fail: the feed cannot answer, which is not the same thing. */
+      .checks .na .pill {
+        background: #18222d;
+        color: #8b9bad;
       }
-      /* Not a cross: the feed cannot answer, which is not the same as a fail. */
-      .checks .na {
-        color: #5f7183;
+      .checks .na .check-name {
+        color: #8b9bad;
       }
-      .checks .na::before {
-        content: '·';
+      .reach {
+        margin: 0;
+        color: #d6e0ea;
+        font-size: 11px;
       }
-      .cap,
+      .reach span {
+        color: #8b9bad;
+        margin-right: 4px;
+      }
       .invalid {
+        border-top: 1px solid #212e3c;
+        padding-top: 6px;
+      }
+      .invalid p:last-child {
         margin: 0;
         color: #8b9bad;
         font-size: 11px;
+      }
+      .invalid b {
+        color: #d6e0ea;
+        font-weight: 600;
       }
       .foot {
         margin: 0;
@@ -770,22 +1052,24 @@ export class MarketEnginePanelComponent {
     if (!reading) return [];
     return (
       [
-        ['context', reading.context, 'Confirmed bias and the dealing range price sits in'],
-        [
-          'structure',
-          reading.structure,
-          'Trend, pullback, at risk or reversal, by the protected level',
-        ],
-        ['setup', reading.setup, 'Price at a level, a sweep, an internal shift'],
-        ['trigger', reading.trigger, 'A break with acceptance inside a time window'],
+        ['context', reading.context],
+        ['structure', reading.structure],
+        ['setup', reading.setup],
+        ['trigger', reading.trigger],
       ] as const
-    ).map(([role, view, hint]) => ({
+    ).map(([role, view]) => ({
       role,
       view: view as TimeframeReading,
-      hint,
+      hint: ROLE_HELP[role],
       up: view.state.endsWith('_UP'),
       down: view.state.endsWith('_DOWN'),
     }));
+  });
+
+  /** The newest reading's grade, taken apart into sentences — `null` when ungraded. */
+  protected readonly gradeView = computed(() => {
+    const reading = this.latest();
+    return reading?.grade ? explainGrade(reading) : null;
   });
 
   protected readonly developing = computed(() => describeDeveloping(this.latest()));
@@ -795,12 +1079,45 @@ export class MarketEnginePanelComponent {
     return reading ? describeReading(reading) : '';
   });
 
-  protected label(view: TimeframeReading): string {
-    return STATE_LABELS[view.state];
+  /* The glossary, exposed to the template. */
+  protected readonly stateHelp = STATE_HELP;
+  protected readonly roleHelp = ROLE_HELP;
+  protected readonly reactionHelp = REACTION_HELP;
+  protected readonly gradeHelp = GRADE_HELP;
+  protected readonly gradeScaleHelp = GRADE_SCALE_HELP;
+  protected readonly markStateKey = MARK_STATE_KEY;
+  protected readonly markModifierKey = MARK_MODIFIER_KEY;
+  protected readonly gapHelp = gapHelp;
+  protected readonly cprHelp = cprHelp;
+  protected readonly dayTypeHelp = dayTypeHelp;
+  protected readonly flagHelp = flagHelp;
+  protected readonly poolHelp = poolHelp;
+  protected readonly zoneHelp = zoneHelp;
+
+  protected readonly statusLabel: Readonly<Record<CheckStatus, string>> = {
+    pass: 'Pass',
+    partial: 'Partial',
+    fail: 'Fail',
+    na: 'N/A',
+  };
+
+  protected readonly statusHelp: Readonly<Record<CheckStatus, string>> = {
+    pass: 'This check is fully met.',
+    partial: 'Half met — neither for nor against. Does not cap the grade on its own.',
+    fail: 'This check is not met. Two failures cap the grade at C.',
+    na: 'The data needed for this check does not exist on this feed. It is left out of the score rather than counted as a fail.',
+  };
+
+  protected legHelp(character: LegCharacter): string {
+    return character === 'IMPULSIVE'
+      ? 'Impulsive leg — wide candles with little overlap. The move has intent.'
+      : character === 'CORRECTIVE'
+        ? 'Corrective leg — small, overlapping candles. Typical of a pullback rather than a new trend.'
+        : 'Mixed leg — neither clearly impulsive nor clearly corrective.';
   }
 
-  protected checklist(item: string): string {
-    return CHECKLIST_LABELS[item] ?? item;
+  protected label(view: TimeframeReading): string {
+    return STATE_LABELS[view.state];
   }
 
   protected pct(value: number): string {

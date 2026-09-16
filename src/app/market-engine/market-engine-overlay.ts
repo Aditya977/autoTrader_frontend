@@ -162,9 +162,7 @@ export function marketStateMarkers(
 
   for (const reading of transitions(readings)) {
     const bullish = reading.direction !== 'DOWN';
-    // `at` is a bar CLOSE, so it sits at the very start of the next bucket;
-    // nudged back inside the bar it describes, exactly as a trade fill is.
-    const time = Math.floor(bucketStartMs(reading.at - 1, displaySeconds) / 1000) as UTCTimestamp;
+    const time = markTime(reading, displaySeconds);
     const key = `${time}|${bullish}`;
 
     const bucket = byBar.get(key);
@@ -189,6 +187,52 @@ export function marketStateMarkers(
   }
 
   return markers.sort((a, b) => (a.time as number) - (b.time as number));
+}
+
+/**
+ * The bar a reading is marked on, in epoch seconds.
+ *
+ * `at` is a bar CLOSE, so it sits at the very start of the next bucket; nudged
+ * back inside the bar it describes, exactly as a trade fill is.
+ */
+function markTime(reading: MarketReading, displaySeconds: number): UTCTimestamp {
+  return Math.floor(bucketStartMs(reading.at - 1, displaySeconds) / 1000) as UTCTimestamp;
+}
+
+/**
+ * The marked readings that landed on one drawn bar — what a hover over that
+ * bar has to explain.
+ *
+ * Same transitions and the same snapping as {@link marketStateMarkers}, so the
+ * card under the pointer always describes exactly the mark beside it.
+ */
+export function marksAtBar(
+  readings: readonly MarketReading[],
+  displaySeconds: number,
+  barTime: number,
+): MarketReading[] {
+  return transitions(readings).filter((r) => markTime(r, displaySeconds) === barTime);
+}
+
+/**
+ * Marks that fall on a bar the chart actually drew.
+ *
+ * The engine reads about ten sessions behind the day on screen, because a 4H
+ * swing needs them, and its readings cover all of them. The chart library does
+ * not drop a mark whose time has no bar — it pins it to the nearest one — so
+ * every transition from those earlier days stacked up on the first candle.
+ * Only marks inside the drawn series are kept; the readings behind them still
+ * inform the grades.
+ *
+ * With nothing drawn yet there is no edge to clip at, and the list is returned
+ * untouched.
+ */
+export function withinSeries<T extends { time: UTCTimestamp }>(
+  markers: readonly T[],
+  firstBarTime: number | null,
+): T[] {
+  if (firstBarTime === null) return [...markers];
+  return markers.filter((m) => (m.time as number) >= firstBarTime);
 }
 
 function gradeRank(grade: Grade | null): number {

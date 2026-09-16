@@ -3,11 +3,14 @@ import {
   describeReading,
   labelFor,
   marketStateMarkers,
+  marksAtBar,
   opacityFor,
   protectedLines,
   transitions,
+  withinSeries,
   zoneLines,
 } from './market-engine-overlay';
+import type { UTCTimestamp } from 'lightweight-charts';
 import type {
   Grade,
   MarketReading,
@@ -370,5 +373,43 @@ describe('zoneLines', () => {
   it('marks a mitigated zone as spent rather than hiding it', () => {
     const [edge] = zoneLines(reading(at(1), 'RANGE', { zones: [zone('MITIGATED', 100)] }));
     expect(edge?.spent).toBeTrue();
+  });
+});
+
+describe('withinSeries', () => {
+  const mark = (seconds: number) => ({ time: seconds as UTCTimestamp, text: String(seconds) });
+
+  it('drops marks from before the first drawn bar', () => {
+    // The engine reads ~10 sessions behind the chart day. The chart pins a mark
+    // with no bar to the nearest one, so these used to pile on the first candle.
+    const first = OPEN / 1000;
+    const kept = withinSeries([mark(first - 86_400), mark(first - 900), mark(first), mark(first + 900)], first);
+    expect(kept.map((m) => m.time as number)).toEqual([first, first + 900]);
+  });
+
+  it('keeps everything when nothing is drawn yet', () => {
+    expect(withinSeries([mark(1), mark(2)], null).length).toBe(2);
+  });
+});
+
+describe('marksAtBar', () => {
+  const readings = [
+    reading(at(0), 'RANGE'),
+    reading(at(1), 'BREAKOUT_UP'),
+    reading(at(2), 'BREAKOUT_UP'),
+    reading(at(3), 'PULLBACK_DOWN'),
+  ];
+
+  it('finds the transition marked on a bar, using the same snapping as the marks', () => {
+    for (const marker of marketStateMarkers(readings, 900)) {
+      const found = marksAtBar(readings, 900, marker.time as number);
+      expect(found.length).toBe(1);
+    }
+    expect(marksAtBar(readings, 900, at(1) / 1000 - 900)[0]?.setup.state).toBe('BREAKOUT_UP');
+  });
+
+  it('finds nothing on a bar whose state did not change', () => {
+    // at(2) repeats BREAKOUT_UP, so its bar carries no mark and no explanation.
+    expect(marksAtBar(readings, 900, at(2) / 1000 - 900)).toEqual([]);
   });
 });
