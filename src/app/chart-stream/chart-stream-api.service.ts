@@ -19,6 +19,15 @@ import type {
   SessionRetestsQuery,
   StartStreamRequest,
 } from './chart-stream.models';
+import type {
+  EventLogIngestResult,
+  MarketEngineRequest,
+  MarketEngineResearchRequest,
+  MarketEngineResult,
+  ParityCheckResult,
+  SessionMarketEngineQuery,
+  ValidationResult,
+} from '../market-engine/market-engine.models';
 
 /** A backend error, already unwrapped from the `{ error: {...} }` envelope. */
 export class ChartStreamError extends Error {
@@ -173,6 +182,84 @@ export class ChartStreamApiService {
 
     return this.http
       .get<ChartRetests>(`${this.base}/streamer/stream/${sessionId}/retests`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The multi-timeframe engine's reading of an instrument.
+   *
+   * The third member of the {@link levels}/{@link retests} family and asked the
+   * same way, with one difference worth noticing: no `interval`. Levels and
+   * retests are found *on* the bar size the chart is drawing; the engine reads
+   * five timeframes at once by definition, and `chartSet` picks which five.
+   */
+  marketEngine(request: MarketEngineRequest): Observable<MarketEngineResult> {
+    return this.http
+      .post<MarketEngineResult>(`${this.base}/streamer/stream/market-engine`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The same reading, over the bars **this session has published**.
+   *
+   * Bounded by the session's own clock server-side, which for this endpoint is
+   * the whole guarantee rather than a nicety: a replay half way through a day
+   * must be read as of that moment, not with the afternoon it has not reached.
+   */
+  sessionMarketEngine(
+    sessionId: string,
+    query: SessionMarketEngineQuery = {},
+  ): Observable<MarketEngineResult> {
+    // Only the fields actually set, for the same reason as `sessionLevels`:
+    // every one has a backend default, and an `undefined` serialised as the
+    // string "undefined" is a 400.
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null) params[key] = String(value);
+    }
+
+    return this.http
+      .get<MarketEngineResult>(`${this.base}/streamer/stream/${sessionId}/market-engine`, {
+        params,
+      })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Walks a window and appends its engine events to the stored log.
+   *
+   * Idempotent server-side: event ids are content hashes, so pressing this
+   * twice on the same session writes nothing the second time.
+   */
+  ingestEngineEvents(request: MarketEngineResearchRequest): Observable<EventLogIngestResult> {
+    return this.http
+      .post<EventLogIngestResult>(`${this.base}/streamer/stream/market-engine/log`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Replays one session and diffs it against the stored log.
+   *
+   * `date` is required: parity is a statement about one session, and the
+   * backend refuses to default it rather than pass silently on an empty day.
+   */
+  checkEngineParity(
+    request: MarketEngineResearchRequest & { date: string },
+  ): Observable<ParityCheckResult> {
+    return this.http
+      .post<ParityCheckResult>(`${this.base}/streamer/stream/market-engine/parity`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Forward behaviour of every engine label against a time-of-day matched
+   * baseline. Slow on purpose — it walks a long window.
+   */
+  validateEngine(
+    request: MarketEngineResearchRequest & { seed?: number },
+  ): Observable<ValidationResult> {
+    return this.http
+      .post<ValidationResult>(`${this.base}/streamer/stream/market-engine/validate`, request)
       .pipe(catchError(this.unwrap));
   }
 

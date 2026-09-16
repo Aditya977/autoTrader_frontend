@@ -11,7 +11,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import type { Subscription } from 'rxjs';
+import type { Observable, Subscription } from 'rxjs';
 import {
   CandlestickSeries,
   LineSeries,
@@ -98,6 +98,21 @@ import {
   mergeMarkers,
   retestMarkers,
 } from './retest-overlay';
+import { MarketEnginePanelComponent } from '../market-engine/market-engine-panel.component';
+import {
+  marketStateMarkers,
+  protectedLines,
+  zoneLines,
+} from '../market-engine/market-engine-overlay';
+import type {
+  ChartSet,
+  EventLogIngestResult,
+  MarketEngineResearchRequest,
+  MarketEngineResult,
+  ParityCheckResult,
+  SessionMarketEngineQuery,
+  ValidationResult,
+} from '../market-engine/market-engine.models';
 import type { SimTrade } from '../strategy/strategy.models';
 
 /**
@@ -155,7 +170,7 @@ interface Readout {
 @Component({
   selector: 'app-chart-stream',
   standalone: true,
-  imports: [PatternTimeframeTableComponent, CandlePatternListComponent],
+  imports: [PatternTimeframeTableComponent, CandlePatternListComponent, MarketEnginePanelComponent],
   template: `
     <section class="panel" [class.dimmed]="finished()">
       <header class="head">
@@ -227,6 +242,27 @@ interface Readout {
                     <i class="opt-note">…</i>
                   } @else if (retests().length) {
                     <i class="opt-note">{{ retests().length }}</i>
+                  }
+                </label>
+                <!--
+                  The multi-timeframe engine. Off by default and session-gated
+                  like the other two: it is a reading of history, not something
+                  a chart needs the moment it opens, and it costs a context
+                  fetch nobody asked for.
+                -->
+                <label class="opt" [class.off]="!session()">
+                  <input
+                    type="checkbox"
+                    [checked]="showMarketEngine()"
+                    [disabled]="!session()"
+                    (change)="toggleMarketEngine()"
+                  />
+                  <span class="swatch mte"></span>
+                  <span class="opt-name">Market engine (multi-timeframe)</span>
+                  @if (marketEngineLoading()) {
+                    <i class="opt-note">…</i>
+                  } @else if (marketEngine(); as engine) {
+                    <i class="opt-note">{{ engine.readings.length }}</i>
                   }
                 </label>
                 <label class="opt" [class.off]="!request()">
@@ -501,6 +537,32 @@ interface Readout {
       }
 
       @if (retestsError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
+      <!--
+        The engine's read-out sits below the chart rather than in the overlay
+        menu: the menu is for switching things on, and this is several lines of
+        prose a person reads while looking at the candles.
+      -->
+      @if (showMarketEngine()) {
+        <div class="engine-wrap">
+          <app-market-engine-panel
+            [result]="marketEngine()"
+            [ingestResult]="engineIngest()"
+            [parityResult]="engineParity()"
+            [validationResult]="engineValidation()"
+            [researchBusy]="engineResearchBusy()"
+            [researchError]="engineResearchError()"
+            (chartSetChange)="setChartSet($event)"
+            (ingest)="storeEngineEvents()"
+            (parity)="checkEngineParity()"
+            (validate)="runEngineValidation()"
+          />
+        </div>
+      }
+
+      @if (marketEngineError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -890,6 +952,17 @@ interface Readout {
     .swatch.rt {
       background: linear-gradient(to right, var(--up) 50%, var(--down) 50%);
     }
+    /* The engine reads both ways too, and adds a band for the protected level
+       it draws between them. */
+    .swatch.mte {
+      background: linear-gradient(
+        to right,
+        var(--up) 40%,
+        #7fa6e6 40%,
+        #7fa6e6 60%,
+        var(--down) 60%
+      );
+    }
     .swatch.pdr {
       background: #c3d94e;
     }
@@ -1087,6 +1160,11 @@ interface Readout {
     /* Dotted, like the band on the chart: this one has not resolved yet. */
     .levels.retests .lvl.pending {
       border-bottom: 1px dotted currentColor;
+    }
+
+    .engine-wrap {
+      padding: 0.55rem 0.9rem 0.7rem;
+      border-top: 1px solid var(--border);
     }
 
     .error {
@@ -1409,6 +1487,38 @@ export class ChartStreamComponent {
   readonly retestsLoading = signal(false);
   readonly retestsError = signal<string | null>(null);
 
+  /**
+   * The multi-timeframe engine's readings.
+   *
+   * Unlike the levels and the retests these are **not** interval-bound: the
+   * engine reads five timeframes by definition, and which five is `chartSet`,
+   * not the bar size on screen. So switching the chart from 1m to 15m does not
+   * invalidate them — it only changes which bar each mark has to be snapped to.
+   * That is the whole reason `refreshMarketEngine` is not called from the
+   * interval effect, where the other two are.
+   */
+  readonly marketEngine = signal<MarketEngineResult | null>(null);
+  readonly showMarketEngine = signal(false);
+  readonly marketEngineLoading = signal(false);
+  readonly marketEngineError = signal<string | null>(null);
+  /**
+   * Which bar sizes fill the cascade: `standard` is 4H/1H, `nse` is 125m/75m.
+   *
+   * Kept here rather than inside the panel because it is a *request* parameter
+   * — changing it re-asks the backend — and a control whose effect is a fetch
+   * belongs next to the fetch.
+   */
+  readonly chartSet = signal<ChartSet>('standard');
+
+  /* Research results — the event log, replay parity and validation. */
+  readonly engineIngest = signal<EventLogIngestResult | null>(null);
+  readonly engineParity = signal<ParityCheckResult | null>(null);
+  readonly engineValidation = signal<ValidationResult | null>(null);
+  readonly engineResearchBusy = signal(false);
+  readonly engineResearchError = signal<string | null>(null);
+  /** Protected-level lines, kept apart from the S/R lines so either can clear alone. */
+  private engineLines: IPriceLine[] = [];
+
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
   );
@@ -1655,6 +1765,11 @@ export class ChartStreamComponent {
         // absent on another, so a set found on 5m says nothing about the 15m
         // bars now on screen.
         if (this.showRetests()) this.refreshRetests();
+        // The engine is deliberately *not* re-fetched. Its readings are not
+        // found on the displayed interval — it reads five timeframes at once —
+        // so the held set still describes this instrument correctly. What does
+        // change is which bar each mark snaps to, and the redraw above has
+        // already republished them.
       });
     });
 
@@ -1753,6 +1868,12 @@ export class ChartStreamComponent {
     // Never on by default: a retest is a completed label over history, not
     // something a chart needs the moment it opens.
     this.showRetests.set(false);
+    // Same for the engine, and its readings belong to the instrument and date
+    // that produced them — carrying them into a new session would describe one
+    // chart over another. The chart set survives, because it is a preference
+    // about how to read rather than a fact about this session.
+    this.showMarketEngine.set(false);
+    this.clearMarketEngine();
     this.redraw();
   }
 
@@ -1978,6 +2099,222 @@ export class ChartStreamComponent {
       });
   }
 
+  /**
+   * Shows or hides the multi-timeframe engine.
+   *
+   * Same economy as {@link toggleLevels} and {@link toggleRetests}: turning it
+   * on fetches only when nothing is held, so toggling twice costs one request,
+   * and turning it off keeps the last reading for an instant re-show.
+   *
+   * No interval check, unlike the retests. A reading is not bound to the bar
+   * size on screen — see {@link marketEngine} — so what is held stays valid
+   * when the chart switches timeframe.
+   */
+  toggleMarketEngine(): void {
+    const next = !this.showMarketEngine();
+    this.showMarketEngine.set(next);
+    if (!next) {
+      this.drawMarketEngine();
+      return;
+    }
+    if (this.marketEngine()) this.drawMarketEngine();
+    else this.refreshMarketEngine();
+  }
+
+  /**
+   * Switches the cascade between 4H/1H and 125m/75m.
+   *
+   * Always a refetch, even when the engine is showing nothing: the chart set
+   * decides which bars the context and structure layers are built from, so the
+   * held reading describes a different pair of timeframes and cannot be reused.
+   */
+  protected setChartSet(chartSet: ChartSet): void {
+    if (this.chartSet() === chartSet) return;
+    this.chartSet.set(chartSet);
+    this.marketEngine.set(null);
+    if (this.showMarketEngine()) this.refreshMarketEngine();
+  }
+
+  /**
+   * Asks the session for the engine's reading of the bars it has published.
+   *
+   * The session endpoint rather than the standalone one, and here the reason is
+   * sharper than it is for levels or retests: the session's own clock is what
+   * bounds the reading. A `TEST` replay part-way through a day must be read as
+   * of that moment, and the standalone endpoint — which knows only a date —
+   * would hand back the whole day, afternoon included.
+   */
+  private refreshMarketEngine(): void {
+    const sessionId = this.session()?.sessionId;
+    if (!sessionId) return;
+
+    this.marketEngineError.set(null);
+    this.marketEngineLoading.set(true);
+    this.api
+      .sessionMarketEngine(sessionId, {
+        chartSet: this.chartSet(),
+        roundNumberStep: this.roundNumberStep(),
+      } satisfies SessionMarketEngineQuery)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.marketEngineLoading.set(false);
+          this.marketEngine.set(result);
+          this.marketEngineError.set(null);
+          this.drawMarketEngine();
+        },
+        error: (e: ChartStreamError) => {
+          this.marketEngineLoading.set(false);
+          // Its own line, like the other two: no reading is a chart without
+          // annotations, not a chart whose bars are wrong.
+          this.marketEngineError.set(`Market engine unavailable — ${describe(e)}`);
+        },
+      });
+  }
+
+  /**
+   * The round-number step the engine should place reference levels on.
+   *
+   * 100 for BANKNIFTY, 50 otherwise. Derived from the request rather than
+   * configured, because there is exactly one right answer per instrument and
+   * asking the user for it would be asking them to know the backend's
+   * confluence rule.
+   */
+  private roundNumberStep(): number {
+    return this.request()?.instrument.underlying === 'BANKNIFTY' ? 100 : 50;
+  }
+
+  private clearMarketEngine(): void {
+    this.marketEngine.set(null);
+    this.marketEngineError.set(null);
+    // Research results belong to the instrument and date that produced them,
+    // exactly like the readings.
+    this.engineIngest.set(null);
+    this.engineParity.set(null);
+    this.engineValidation.set(null);
+    this.engineResearchError.set(null);
+    this.drawMarketEngine();
+  }
+
+  /**
+   * The body every research endpoint takes, built from the chart's own request.
+   *
+   * `null` without a request, because the research actions are about the
+   * instrument and date on screen and there is nothing sensible to default to.
+   */
+  private researchRequest(): (MarketEngineResearchRequest & { date?: string }) | null {
+    const request = this.request();
+    if (!request) return null;
+    return {
+      instrument: request.instrument,
+      date: request.date,
+      chartSet: this.chartSet(),
+      roundNumberStep: this.roundNumberStep(),
+    };
+  }
+
+  /** Appends this instrument's engine events to the stored log. */
+  protected storeEngineEvents(): void {
+    const body = this.researchRequest();
+    if (!body) return;
+    this.runResearch(this.api.ingestEngineEvents(body), (result) => this.engineIngest.set(result));
+  }
+
+  /**
+   * Replays the chart's session and diffs it against the stored log.
+   *
+   * Needs a date: parity is about one session. On a LIVE chart there is none on
+   * the request, so today is used — the session actually being drawn.
+   */
+  protected checkEngineParity(): void {
+    const body = this.researchRequest();
+    if (!body) return;
+    const date = body.date ?? new Date().toISOString().slice(0, 10);
+    this.runResearch(this.api.checkEngineParity({ ...body, date }), (result) =>
+      this.engineParity.set(result),
+    );
+  }
+
+  /** Forward behaviour of every label, over the longest window the backend allows. */
+  protected runEngineValidation(): void {
+    const body = this.researchRequest();
+    if (!body) return;
+    this.runResearch(this.api.validateEngine(body), (result) => this.engineValidation.set(result));
+  }
+
+  /** One busy flag and one error line for all three actions. */
+  private runResearch<T>(source: Observable<T>, apply: (result: T) => void): void {
+    this.engineResearchError.set(null);
+    this.engineResearchBusy.set(true);
+    source.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+      next: (result) => {
+        this.engineResearchBusy.set(false);
+        apply(result);
+      },
+      error: (e: ChartStreamError) => {
+        this.engineResearchBusy.set(false);
+        this.engineResearchError.set(describe(e));
+      },
+    });
+  }
+
+  /**
+   * Puts the engine's protected levels on the chart and republishes the marks.
+   *
+   * Protected levels are lines rather than marks because the *price* is the
+   * whole point of one — a mark cannot say a price — and there are at most
+   * three, which stays legible. Everything else the engine says is a mark or
+   * lives in the panel.
+   */
+  private drawMarketEngine(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.engineLines) series.removePriceLine(line);
+    this.engineLines = [];
+
+    if (this.showMarketEngine()) {
+      const latest = this.marketEngine()?.readings.at(-1) ?? null;
+      for (const line of protectedLines(latest)) {
+        this.engineLines.push(
+          series.createPriceLine({
+            price: line.price,
+            color: fade(line.bullish ? THEME.up : THEME.down, 0.75),
+            lineWidth: 2,
+            lineStyle: LineStyle.Solid,
+            lineVisible: true,
+            axisLabelVisible: true,
+            title: line.title,
+            axisLabelColor: '',
+            axisLabelTextColor: '',
+          }),
+        );
+      }
+
+      // Zone edges: thin, dotted and unlabelled on the axis, so they never
+      // compete with the protected levels for the price scale.
+      for (const edge of zoneLines(latest)) {
+        this.engineLines.push(
+          series.createPriceLine({
+            price: edge.price,
+            color: fade(edge.bullish ? THEME.up : THEME.down, edge.spent ? 0.25 : 0.5),
+            lineWidth: 1,
+            lineStyle: LineStyle.Dotted,
+            lineVisible: true,
+            axisLabelVisible: false,
+            title: edge.title,
+            axisLabelColor: '',
+            axisLabelTextColor: '',
+          }),
+        );
+      }
+    }
+
+    // The engine shares the one marker plugin with trades and retests, so
+    // either changing means re-publishing all three.
+    this.drawMarkers();
+  }
+
   private applyRetests(result: ChartRetests): void {
     this.retests.set(result.retests);
     this.retestsInterval = result.interval;
@@ -2050,7 +2387,11 @@ export class ChartStreamComponent {
   chartMarkers(): SeriesMarker<UTCTimestamp>[] {
     const seconds = this.displaySeconds();
     const retests = this.showRetests() ? retestMarkers(this.retests(), seconds) : [];
-    return mergeMarkers(markersFor(this.trades(), seconds), retests);
+    const engine =
+      this.showMarketEngine() && this.marketEngine()
+        ? marketStateMarkers(this.marketEngine()?.readings ?? [], seconds)
+        : [];
+    return mergeMarkers(markersFor(this.trades(), seconds), retests, engine);
   }
 
   /** The backend's name for the bar size on screen. */
@@ -2359,6 +2700,7 @@ export class ChartStreamComponent {
     () =>
       (this.showLevels() ? 1 : 0) +
       (this.showRetests() ? 1 : 0) +
+      (this.showMarketEngine() ? 1 : 0) +
       (this.showPreviousDayRange() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0) +
@@ -2371,6 +2713,7 @@ export class ChartStreamComponent {
     () =>
       this.levelsLoading() ||
       this.retestsLoading() ||
+      this.marketEngineLoading() ||
       this.pdrLoading() ||
       this.candlePatternsLoading(),
   );
@@ -2386,6 +2729,7 @@ export class ChartStreamComponent {
   protected clearOverlays(): void {
     if (this.showLevels()) this.toggleLevels();
     if (this.showRetests()) this.toggleRetests();
+    if (this.showMarketEngine()) this.toggleMarketEngine();
     if (this.showPreviousDayRange()) this.togglePreviousDayRange();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
