@@ -28,6 +28,10 @@ import type {
   SessionMarketEngineQuery,
   ValidationResult,
 } from '../market-engine/market-engine.models';
+import type {
+  LevelRejectionRequest,
+  LevelRejectionResponse,
+} from '../level-rejection/level-rejection.models';
 
 /** A backend error, already unwrapped from the `{ error: {...} }` envelope. */
 export class ChartStreamError extends Error {
@@ -273,6 +277,20 @@ export class ChartStreamApiService {
   previousDayRange(request: PreviousDayRangeRequest): Observable<PreviousDayRangeResponse> {
     return this.http
       .post<PreviousDayRangeResponse>(`${this.base}/streamer/stream/previous-day-range`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * Previous-day levels, the 5M rejections at them, the 1M confirmations, and
+   * how each resulting entry played out, over a window of trading days.
+   *
+   * Session-independent like {@link previousDayRange}: every level comes from a
+   * closed day. A long window fetches a month of one-minute bars per upstream
+   * call.
+   */
+  levelRejection(request: LevelRejectionRequest): Observable<LevelRejectionResponse> {
+    return this.http
+      .post<LevelRejectionResponse>(`${this.base}/streamer/stream/level-rejection`, request)
       .pipe(catchError(this.unwrap));
   }
 

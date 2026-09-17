@@ -1040,3 +1040,353 @@ describe('ChartStreamComponent retests', () => {
     expect(text()).not.toContain('Retests unavailable');
   });
 });
+
+describe('ChartStreamComponent level rejection', () => {
+  let fixture: ComponentFixture<HostComponent>;
+  let host: HostComponent;
+  let http: HttpTestingController;
+  let events: Subject<ChartStreamEvent>;
+
+  const runUrl = `${environment.apiBase}/streamer/stream/level-rejection`;
+
+  const SETUP = {
+    id: '2026-08-14T09:20-PDL-LONG',
+    date: '2026-08-14',
+    direction: 'LONG',
+    zoneId: 'PDL',
+    zoneLow: 95,
+    zoneHigh: 95,
+    levels: [{ type: 'PDL', price: 95 }],
+    primaryLevel: 'PDL',
+    primaryLevelPrice: 95,
+    rejection: {
+      type: 'SWEEP_PIN',
+      barTs: OPEN_MS + 5 * MINUTE,
+      o: 97,
+      h: 98,
+      l: 94,
+      c: 98,
+      extreme: 94,
+      extremeTs: OPEN_MS + 6 * MINUTE,
+      swept: true,
+    },
+    structure: {
+      swingPrice: 100,
+      swingTs: OPEN_MS + 11 * MINUTE,
+      pivotPrice: 96,
+      pivotTs: OPEN_MS + 13 * MINUTE,
+      breakTs: OPEN_MS + 16 * MINUTE,
+      breakClose: 101,
+      retestTs: null,
+      description: 'higher low 96, close 101 through swing high 100',
+    },
+    outcome: 'ENTERED',
+    outcomeTs: OPEN_MS + 17 * MINUTE,
+    note: 'LONG at 101',
+    trade: {
+      setupId: '2026-08-14T09:20-PDL-LONG',
+      date: '2026-08-14',
+      direction: 'LONG',
+      entryTs: OPEN_MS + 17 * MINUTE,
+      entry: 101,
+      stop: 93.9,
+      target: 108.1,
+      targetSource: 'FIXED_RR',
+      targetLevel: null,
+      riskPoints: 7.1,
+      rewardPoints: 7.1,
+      plannedRewardRisk: 1,
+      // After the last bar the test draws, so it must not be marked yet.
+      exitTs: OPEN_MS + 45 * MINUTE,
+      exit: 108.1,
+      exitReason: 'TARGET',
+      pnlPoints: 7.1,
+      rMultiple: 1,
+      result: 'WIN',
+      mfePoints: 7.1,
+      maePoints: 1,
+      mfeR: 1,
+      maeR: 0.14,
+      holdMinutes: 28,
+    },
+  };
+
+  const summary = {
+    trades: 1,
+    wins: 1,
+    losses: 0,
+    breakeven: 0,
+    winRate: 1,
+    totalR: 1,
+    averageR: 1,
+    totalPoints: 7.1,
+    expectancyPoints: 7.1,
+    profitFactor: null,
+    averageWinR: 1,
+    averageLossR: null,
+    averageWinPoints: 7.1,
+    averageLossPoints: null,
+    maxDrawdownR: 0,
+    maxDrawdownPoints: 0,
+    maxConsecutiveWins: 1,
+    maxConsecutiveLosses: 0,
+    averageMfeR: 1,
+    averageMaeR: 0.14,
+    averageHoldMinutes: 28,
+    averageRiskPoints: 7.1,
+  };
+  const report = {
+    summary,
+    edge: {
+      trades: 1,
+      meanR: 1,
+      stdevR: null,
+      standardError: null,
+      tStat: null,
+      ci95Low: null,
+      ci95High: null,
+      minSample: 30,
+      verdict: 'INSUFFICIENT_SAMPLE',
+      explanation: '1 trades; at least 30 are needed.',
+    },
+    byLevel: [{ key: 'PDL', summary }],
+    byZone: [{ key: 'PDL', summary }],
+    byDirection: [{ key: 'LONG', summary }],
+    byTimeOfDay: [{ key: '09:15-10:15', summary }],
+    byRejectionType: [{ key: 'SWEEP_PIN', summary }],
+    byExitReason: [{ key: 'TARGET', summary }],
+    equity: [],
+  };
+  const funnel = {
+    tradingDays: 1,
+    daysWithLevels: 1,
+    daysWithoutSpecialHour: 0,
+    levelInteractions: 2,
+    rejections: 1,
+    structureConfirmations: 1,
+    entries: 1,
+    outcomes: { ENTERED: 1 },
+  };
+  const RESPONSE = {
+    instrumentKey: 'NSE_FO|54321',
+    tradingsymbol: 'NIFTY24AUG24350CE',
+    from: '2026-08-14',
+    to: '2026-08-14',
+    options: {},
+    dataWarnings: [],
+    skippedDays: [],
+    result: {
+      funnel,
+      report,
+      trades: [],
+      setups: [SETUP],
+      setupsTotal: 1,
+      days: [
+        {
+          date: '2026-08-14',
+          referenceDate: '2026-08-13',
+          levels: [
+            { type: 'PDH', price: 110 },
+            { type: 'PDL', price: 95 },
+          ],
+        },
+      ],
+    },
+    comparison: { entryTrigger: 'REJECTION_CLOSE', funnel, report },
+  };
+
+  async function settle(): Promise<void> {
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  function startSession(request: StartStreamRequest): void {
+    host.request.set(request);
+    fixture.detectChanges();
+    http.expectOne(`${environment.apiBase}/streamer/stream/start`).flush(SNAPSHOT);
+    fixture.detectChanges();
+  }
+
+  /** The dropdown row, opening the overlays menu first if it is closed. */
+  const option = (): HTMLInputElement => {
+    const root = fixture.nativeElement as HTMLElement;
+    if (!root.querySelector('.menu')) {
+      (root.querySelector('.ind > button') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
+    const rows = [...root.querySelectorAll('.menu .opt')] as HTMLElement[];
+    return rows
+      .find((r) => (r.textContent ?? '').includes('Level rejection'))
+      ?.querySelector('input') as HTMLInputElement;
+  };
+
+  beforeEach(async () => {
+    events = new Subject<ChartStreamEvent>();
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ChartStreamSocketService, useValue: { connect: () => events.asObservable() } },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(HostComponent);
+    host = fixture.componentInstance;
+    http = TestBed.inject(HttpTestingController);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    http.verify();
+    fixture.destroy();
+  });
+
+  it('is an option in the overlays dropdown, disabled until there is a request', () => {
+    expect(option()).toBeTruthy();
+    expect(option().disabled).toBeTrue();
+  });
+
+  it('fetches the days on screen and marks setups up to the newest bar', async () => {
+    startSession(REQUEST);
+    for (let i = 0; i < 30; i++) events.next(candle(OPEN_MS + i * MINUTE, 100 + (i % 5)));
+    await settle();
+
+    option().click();
+    fixture.detectChanges();
+    const run = http.expectOne(runUrl);
+    expect(run.request.method).toBe('POST');
+    expect(run.request.body).toEqual(
+      jasmine.objectContaining({
+        instrument: REQUEST.instrument,
+        from: '2026-08-14',
+        to: '2026-08-14',
+        includeComparison: false,
+      }),
+    );
+    run.flush(RESPONSE);
+    await settle();
+
+    // The exit at 10:00 is after the newest drawn bar (09:44), so it is not marked yet.
+    expect(
+      host
+        .chart()
+        .chartMarkers()
+        .map((m) => m.text),
+    ).toEqual(['PDL rejection ↑', '1M break', 'LONG 101']);
+    // Only the chart: no read-out panel.
+    expect(fixture.nativeElement.querySelector('app-level-rejection-panel')).toBeNull();
+
+    // Off removes the marks; on again redraws them without another request.
+    option().click();
+    await settle();
+    expect(host.chart().chartMarkers()).toEqual([]);
+    option().click();
+    await settle();
+    expect(host.chart().chartMarkers().length).toBe(3);
+    http.expectNone(runUrl);
+  });
+
+  it('switches itself off for a new session', async () => {
+    startSession(REQUEST);
+    option().click();
+    fixture.detectChanges();
+    http.expectOne(runUrl).flush(RESPONSE);
+    await settle();
+
+    startSession({ ...REQUEST, date: '2026-08-15' });
+    await settle();
+
+    expect(option().checked).toBeFalse();
+    expect(host.chart().chartMarkers()).toEqual([]);
+  });
+});
+
+describe('ChartStreamComponent overlay menu', () => {
+  let fixture: ComponentFixture<HostComponent>;
+  let host: HostComponent;
+  let http: HttpTestingController;
+
+  const root = (): HTMLElement => fixture.nativeElement as HTMLElement;
+  const menu = (): HTMLElement | null => root().querySelector('.menu');
+  const open = (): void => {
+    (root().querySelector('.ind > button') as HTMLButtonElement).click();
+    fixture.detectChanges();
+  };
+  const row = (name: string): HTMLElement =>
+    ([...root().querySelectorAll('.menu .opt')] as HTMLElement[]).find(
+      (r) => r.querySelector('.opt-name')?.textContent?.trim() === name,
+    ) as HTMLElement;
+
+  beforeEach(async () => {
+    // Overlay switches are remembered between visits; start from none on.
+    localStorage.clear();
+    await TestBed.configureTestingModule({
+      imports: [HostComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        {
+          provide: ChartStreamSocketService,
+          useValue: { connect: () => new Subject<ChartStreamEvent>().asObservable() },
+        },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(HostComponent);
+    host = fixture.componentInstance;
+    http = TestBed.inject(HttpTestingController);
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    http.verify();
+    fixture.destroy();
+  });
+
+  it('groups overlays by what they show, with indicators as chips', () => {
+    open();
+    const groups = [...root().querySelectorAll('.menu-group .menu-head')].map((h) =>
+      h.textContent?.trim(),
+    );
+    expect(groups).toEqual(['Key levels', 'Price action at levels', 'Patterns', 'Indicators']);
+    expect(root().querySelectorAll('.menu .chip').length).toBeGreaterThan(1);
+    // Chart patterns are on by default, and the header counts them.
+    expect(root().querySelector('.menu-count')?.textContent?.trim()).toBe('1 on');
+  });
+
+  it('says why a row cannot be used yet instead of only dimming it', () => {
+    open();
+    expect(row('Support & resistance').classList).toContain('off');
+    expect(row('Support & resistance').textContent).toContain('Start the chart to use this');
+    expect(row('Level rejection').textContent).toContain('Pick an instrument to use this');
+    // No prerequisite: described, not blocked.
+    expect(row('Chart patterns').classList).not.toContain('off');
+    expect(row('Chart patterns').textContent).toContain('Triangles');
+  });
+
+  it('describes a row once what it needs exists', () => {
+    host.request.set(REQUEST);
+    fixture.detectChanges();
+    http.expectOne(`${environment.apiBase}/streamer/stream/start`).flush(SNAPSHOT);
+    fixture.detectChanges();
+    open();
+    expect(row('Level rejection').classList).not.toContain('off');
+    expect(row('Level rejection').textContent).toContain('5M rejection');
+    expect(row('Support & resistance').textContent).toContain('Swing and pivot levels');
+  });
+
+  it('closes on Escape and on a click outside, but not on a click inside', () => {
+    open();
+    (row('Chart patterns').querySelector('.opt-name') as HTMLElement).click();
+    fixture.detectChanges();
+    expect(menu()).not.toBeNull();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    fixture.detectChanges();
+    expect(menu()).toBeNull();
+
+    open();
+    document.body.click();
+    fixture.detectChanges();
+    expect(menu()).toBeNull();
+  });
+});

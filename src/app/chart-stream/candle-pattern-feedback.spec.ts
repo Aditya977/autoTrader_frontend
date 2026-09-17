@@ -204,6 +204,8 @@ describe('candlestick overlay feedback', () => {
     expect(body['interval']).toBe('1minute');
     // The forming bar is never sent: forty arrived, thirty-nine have closed.
     expect((body['bars'] as unknown[]).length).toBe(39);
+    // The instrument rides along so the backend can warm up behind the first bar.
+    expect(body['instrument']).toEqual(jasmine.objectContaining({ underlying: 'NIFTY' }));
 
     requests[0]!.flush(answer(0));
   });

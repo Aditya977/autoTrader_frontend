@@ -75,6 +75,7 @@ import {
   formatPrice,
   formatVolume,
   intervalNameFor,
+  istDateKey,
 } from './chart-time';
 import {
   TERMINAL_STATUSES,
@@ -100,6 +101,12 @@ import {
 } from './retest-overlay';
 import { MarketEnginePanelComponent } from '../market-engine/market-engine-panel.component';
 import {
+  OverlayMenuComponent,
+  countLabel,
+  type OverlayChip,
+  type OverlayGroup,
+} from './overlay-menu.component';
+import {
   marketStateMarkers,
   marksAtBar,
   protectedLines,
@@ -117,6 +124,8 @@ import type {
   ValidationResult,
 } from '../market-engine/market-engine.models';
 import type { SimTrade } from '../strategy/strategy.models';
+import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
+import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
 
 /**
  * How a support/resistance level is drawn.
@@ -173,7 +182,16 @@ interface Readout {
 @Component({
   selector: 'app-chart-stream',
   standalone: true,
-  imports: [PatternTimeframeTableComponent, CandlePatternListComponent, MarketEnginePanelComponent],
+  host: {
+    '(document:click)': 'closeOverlayMenuOutside($event)',
+    '(document:keydown.escape)': 'showOverlays.set(false)',
+  },
+  imports: [
+    PatternTimeframeTableComponent,
+    CandlePatternListComponent,
+    MarketEnginePanelComponent,
+    OverlayMenuComponent,
+  ],
   template: `
     <section class="panel" [class.dimmed]="finished()">
       <header class="head">
@@ -215,122 +233,12 @@ interface Readout {
             </button>
 
             @if (showOverlays()) {
-              <div class="menu" role="group" aria-label="Overlays">
-                <p class="menu-head">Price levels</p>
-                <label class="opt" [class.off]="!session()">
-                  <input
-                    type="checkbox"
-                    [checked]="showLevels()"
-                    [disabled]="!session()"
-                    (change)="toggleLevels()"
-                  />
-                  <span class="swatch sr"></span>
-                  <span class="opt-name">Support &amp; resistance</span>
-                  @if (levelsLoading()) {
-                    <i class="opt-note">…</i>
-                  } @else if (levels().length) {
-                    <i class="opt-note">{{ levels().length }}</i>
-                  }
-                </label>
-                <label class="opt" [class.off]="!session()">
-                  <input
-                    type="checkbox"
-                    [checked]="showRetests()"
-                    [disabled]="!session()"
-                    (change)="toggleRetests()"
-                  />
-                  <span class="swatch rt"></span>
-                  <span class="opt-name">Retests</span>
-                  @if (retestsLoading()) {
-                    <i class="opt-note">…</i>
-                  } @else if (retests().length) {
-                    <i class="opt-note">{{ retests().length }}</i>
-                  }
-                </label>
-                <!--
-                  The multi-timeframe engine. Off by default and session-gated
-                  like the other two: it is a reading of history, not something
-                  a chart needs the moment it opens, and it costs a context
-                  fetch nobody asked for.
-                -->
-                <label class="opt" [class.off]="!session()">
-                  <input
-                    type="checkbox"
-                    [checked]="showMarketEngine()"
-                    [disabled]="!session()"
-                    (change)="toggleMarketEngine()"
-                  />
-                  <span class="swatch mte"></span>
-                  <span class="opt-name">Market engine (multi-timeframe)</span>
-                  @if (marketEngineLoading()) {
-                    <i class="opt-note">…</i>
-                  } @else if (marketEngine(); as engine) {
-                    <i class="opt-note">{{ engine.readings.length }}</i>
-                  }
-                </label>
-                <label class="opt" [class.off]="!request()">
-                  <input
-                    type="checkbox"
-                    [checked]="showPreviousDayRange()"
-                    [disabled]="!request()"
-                    (change)="togglePreviousDayRange()"
-                  />
-                  <span class="swatch pdr"></span>
-                  <span class="opt-name">Previous day range</span>
-                  @if (pdrLoading()) {
-                    <i class="opt-note">…</i>
-                  }
-                </label>
-
-                <p class="menu-head">Patterns</p>
-                <label class="opt">
-                  <input type="checkbox" [checked]="showPatterns()" (change)="togglePatterns()" />
-                  <span class="swatch pat"></span>
-                  <span class="opt-name">Chart patterns</span>
-                  @if (patterns().length) {
-                    <i class="opt-note">{{ patterns().length }}</i>
-                  }
-                </label>
-                <label class="opt">
-                  <input
-                    type="checkbox"
-                    [checked]="showCandlePatterns()"
-                    (change)="toggleCandlePatterns()"
-                  />
-                  <span class="swatch candles"></span>
-                  <span class="opt-name">Candlesticks</span>
-                  @if (candleBadge(); as badge) {
-                    <i class="opt-note" [class.bad]="candlePatternsError()">{{ badge }}</i>
-                  }
-                </label>
-
-                <p class="menu-head">Moving averages</p>
-                @for (choice of emaChoices; track choice.period) {
-                  <label class="opt">
-                    <input
-                      type="checkbox"
-                      [checked]="isEmaOn(choice.period)"
-                      (change)="toggleEma(choice.period)"
-                    />
-                    <span class="swatch" [style.background]="choice.color"></span>
-                    <span class="opt-name">EMA {{ choice.period }}</span>
-                  </label>
-                }
-                <p class="menu-head">Volume</p>
-                <label class="opt">
-                  <input type="checkbox" [checked]="showVwap()" (change)="toggleVwap()" />
-                  <span class="swatch" [style.background]="vwapColor"></span>
-                  <span class="opt-name">VWAP</span>
-                </label>
-                <button
-                  type="button"
-                  class="menu-clear"
-                  [disabled]="!overlayCount()"
-                  (click)="clearOverlays()"
-                >
-                  Clear all
-                </button>
-              </div>
+              <app-overlay-menu
+                [groups]="overlayGroups"
+                [chips]="indicatorChips"
+                [count]="overlayCount()"
+                (clearAll)="clearOverlays()"
+              />
             }
           </div>
           <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
@@ -566,6 +474,10 @@ interface Readout {
       }
 
       @if (marketEngineError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
+      @if (levelRejectionError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -866,86 +778,6 @@ interface Readout {
       position: relative;
     }
 
-    .menu {
-      position: absolute;
-      top: calc(100% + 0.3rem);
-      right: 0;
-      z-index: 20;
-      min-width: 11rem;
-      padding: 0.4rem;
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius-sm);
-      background: var(--surface-2);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-      display: flex;
-      flex-direction: column;
-      gap: 0.1rem;
-    }
-
-    .menu-head {
-      margin: 0 0 0.2rem;
-      padding: 0 0.3rem;
-      font-size: 0.6rem;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--text-muted);
-    }
-
-    .opt {
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-      padding: 0.25rem 0.3rem;
-      border-radius: 4px;
-      font-size: 0.74rem;
-      cursor: pointer;
-    }
-
-    .opt:hover {
-      background: var(--surface-3, rgba(255, 255, 255, 0.05));
-    }
-
-    .opt input {
-      margin: 0;
-      accent-color: var(--accent);
-      cursor: pointer;
-    }
-
-    /* The colour the line is actually drawn in, so the menu doubles as the
-       legend and no separate key is needed. */
-    .swatch {
-      width: 14px;
-      height: 2px;
-      border-radius: 1px;
-      flex: none;
-    }
-
-    .opt-name {
-      font-variant-numeric: tabular-nums;
-    }
-
-    .menu-clear {
-      margin-top: 0.25rem;
-      padding: 0.28rem;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      background: none;
-      color: var(--text-muted);
-      font: inherit;
-      font-size: 0.68rem;
-      cursor: pointer;
-    }
-
-    .menu-clear:hover:not(:disabled) {
-      color: var(--text);
-      border-color: var(--border-strong);
-    }
-
-    .menu-clear:disabled {
-      opacity: 0.4;
-      cursor: default;
-    }
-
     .ghost .badge {
       font-style: normal;
       margin-left: 0.3rem;
@@ -953,60 +785,9 @@ interface Readout {
       opacity: 0.8;
     }
 
-    /* A row swatch stands in for the pressed colour each toggle used to carry
-       on its own button, so the menu still says at a glance which overlay is
-       which on the chart. */
-    .swatch.sr {
-      background: var(--accent);
-    }
-    /* Retests are drawn in the breakout direction's colour, so the swatch
-       carries both rather than picking one and misreporting the other. */
-    .swatch.rt {
-      background: linear-gradient(to right, var(--up) 50%, var(--down) 50%);
-    }
-    /* The engine reads both ways too, and adds a band for the protected level
-       it draws between them. */
-    .swatch.mte {
-      background: linear-gradient(
-        to right,
-        var(--up) 40%,
-        #7fa6e6 40%,
-        #7fa6e6 60%,
-        var(--down) 60%
-      );
-    }
-    .swatch.pdr {
-      background: #c3d94e;
-    }
-    .swatch.pat {
-      background: var(--pattern-bullish);
-    }
-    .swatch.candles {
-      background: var(--up);
-    }
-
-    /* A count, or one character of "still fetching", at the end of the row. */
-    .opt-note {
-      margin-left: auto;
-      padding-left: 0.5rem;
-      font-style: normal;
-      font-size: 0.66rem;
-      color: var(--text-faint);
-      font-variant-numeric: tabular-nums;
-    }
-
-    /* Unavailable rather than off: support and resistance needs a session, and
-       the previous day's range needs an instrument. Dimming the row says that
-       better than hiding it, which would read as the feature not existing. */
-    .opt-note.bad,
     .badge.bad {
       color: var(--down);
       font-weight: 700;
-    }
-
-    .opt.off {
-      opacity: 0.45;
-      cursor: default;
     }
 
     .tf-panel {
@@ -1468,6 +1249,144 @@ export class ChartStreamComponent {
   readonly selectedEmas = signal<readonly number[]>([]);
   /** Whether the overlay menu is open. Not persisted — a menu is not a setting. */
   readonly showOverlays = signal(false);
+  private readonly hostElement = inject(ElementRef<HTMLElement>);
+
+  /**
+   * Every toggle row in the overlay menu, grouped the way a reader looks for
+   * them. Data rather than repeated markup, so a new overlay is one entry here
+   * and cannot forget its description or its reason for being unavailable.
+   * The indicators (EMAs, VWAP) are {@link indicatorChips}.
+   */
+  protected readonly overlayGroups: readonly OverlayGroup[] = [
+    {
+      title: 'Key levels',
+      items: [
+        {
+          id: 'sr',
+          name: 'Support & resistance',
+          hint: 'Swing and pivot levels on this bar size',
+          swatch: 'sr',
+          blocked: () => this.needsSession(),
+          on: () => this.showLevels(),
+          toggle: () => this.toggleLevels(),
+          note: () => (this.levelsLoading() ? '…' : countLabel(this.levels().length, 'level')),
+        },
+        {
+          id: 'pdr',
+          name: 'Previous day range',
+          hint: "Yesterday's high, low and midpoint",
+          swatch: 'pdr',
+          blocked: () => this.needsInstrument(),
+          on: () => this.showPreviousDayRange(),
+          toggle: () => this.togglePreviousDayRange(),
+          note: () => (this.pdrLoading() ? '…' : null),
+        },
+      ],
+    },
+    {
+      title: 'Price action at levels',
+      items: [
+        {
+          id: 'retests',
+          name: 'Retests',
+          hint: 'Where price came back to a broken level',
+          swatch: 'rt',
+          blocked: () => this.needsSession(),
+          on: () => this.showRetests(),
+          toggle: () => this.toggleRetests(),
+          note: () => (this.retestsLoading() ? '…' : countLabel(this.retests().length, 'retest')),
+        },
+        {
+          id: 'level-rejection',
+          name: 'Level rejection',
+          hint: 'PDH · PDL · 50% · 13:15 hour → 5M rejection → 1M break',
+          swatch: 'lrj',
+          blocked: () => this.needsInstrument(),
+          on: () => this.showLevelRejection(),
+          toggle: () => this.toggleLevelRejection(),
+          note: () => {
+            if (this.levelRejectionLoading()) return '…';
+            const result = this.levelRejection();
+            return result ? countLabel(result.result.funnel.entries, 'entry', 'entries') : null;
+          },
+        },
+        {
+          id: 'market-engine',
+          name: 'Market engine',
+          hint: 'Trend state across five timeframes, read-out below the chart',
+          swatch: 'mte',
+          blocked: () => this.needsSession(),
+          on: () => this.showMarketEngine(),
+          toggle: () => this.toggleMarketEngine(),
+          note: () => {
+            if (this.marketEngineLoading()) return '…';
+            const engine = this.marketEngine();
+            return engine ? countLabel(engine.readings.length, 'reading') : null;
+          },
+        },
+      ],
+    },
+    {
+      title: 'Patterns',
+      items: [
+        {
+          id: 'patterns',
+          name: 'Chart patterns',
+          hint: 'Triangles, flags, channels, double tops and bottoms',
+          swatch: 'pat',
+          blocked: () => null,
+          on: () => this.showPatterns(),
+          toggle: () => this.togglePatterns(),
+          note: () => countLabel(this.patterns().length, 'found', 'found'),
+        },
+        {
+          id: 'candles',
+          name: 'Candlesticks',
+          hint: 'Named candle patterns such as engulfing and hammer',
+          swatch: 'candles',
+          blocked: () => null,
+          on: () => this.showCandlePatterns(),
+          toggle: () => this.toggleCandlePatterns(),
+          note: () => this.candleBadge(),
+          bad: () => !!this.candlePatternsError(),
+        },
+      ],
+    },
+  ];
+
+  /** EMAs and VWAP, switched on as chips at the foot of the menu. */
+  protected readonly indicatorChips: readonly OverlayChip[] = [
+    ...EMA_INDICATORS.map((choice) => ({
+      id: `ema-${choice.period}`,
+      name: `EMA ${choice.period}`,
+      color: choice.color,
+      on: () => this.isEmaOn(choice.period),
+      toggle: () => this.toggleEma(choice.period),
+    })),
+    {
+      id: 'vwap',
+      name: 'VWAP',
+      color: VWAP_COLOR,
+      on: () => this.showVwap(),
+      toggle: () => this.toggleVwap(),
+    },
+  ];
+
+  private needsSession(): string | null {
+    return this.session() ? null : 'Start the chart to use this';
+  }
+
+  private needsInstrument(): string | null {
+    return this.request() ? null : 'Pick an instrument to use this';
+  }
+
+  /** Closes the overlay menu on a click anywhere outside it and its button. */
+  protected closeOverlayMenuOutside(event: MouseEvent): void {
+    if (!this.showOverlays()) return;
+    const menu = (this.hostElement.nativeElement as HTMLElement).querySelector('.ind');
+    if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+    this.showOverlays.set(false);
+  }
   /** One line series per selected period, keyed so it can be removed. */
   private readonly emaSeries = new Map<number, ISeriesApi<'Line'>>();
   /** Whether the session VWAP is drawn. Persisted, like the averages. */
@@ -1564,6 +1483,21 @@ export class ChartStreamComponent {
   readonly engineResearchError = signal<string | null>(null);
   /** Protected-level lines, kept apart from the S/R lines so either can clear alone. */
   private engineLines: IPriceLine[] = [];
+
+  /* --- level rejection ------------------------------------------------ */
+  /**
+   * The previous-day level rejection overlay: levels, 5M rejections, 1M
+   * confirmations and their outcomes, for the days the chart is showing.
+   *
+   * Session-independent like the previous day range — every level comes from a
+   * closed day — so it needs only the request. Nothing but the chart shows it:
+   * the levels as lines, each setup as marks.
+   */
+  readonly showLevelRejection = signal(false);
+  readonly levelRejection = signal<LevelRejectionResponse | null>(null);
+  readonly levelRejectionLoading = signal(false);
+  readonly levelRejectionError = signal<string | null>(null);
+  private levelRejectionLines: IPriceLine[] = [];
 
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
@@ -1920,6 +1854,9 @@ export class ChartStreamComponent {
     // about how to read rather than a fact about this session.
     this.showMarketEngine.set(false);
     this.clearMarketEngine();
+    // Levels and setups belong to the instrument and date that produced them.
+    this.showLevelRejection.set(false);
+    this.clearLevelRejection();
     this.redraw();
   }
 
@@ -2450,7 +2387,7 @@ export class ChartStreamComponent {
     // nearest one by the chart, which stacked ten days of engine history on the
     // first candle.
     return withinSeries(
-      mergeMarkers(markersFor(this.trades(), seconds), retests, engine),
+      mergeMarkers(markersFor(this.trades(), seconds), retests, engine, this.levelRejectionMarks()),
       this.firstBarTime(),
     );
   }
@@ -2531,6 +2468,9 @@ export class ChartStreamComponent {
     this.drawEmas();
     this.drawVwap();
     this.drawPreviousDayRange();
+    // Its marks stop at the newest drawn bar, so a replay that grows must
+    // re-publish them or the entry it has just reached stays hidden.
+    if (this.showLevelRejection()) this.drawLevelRejection();
   }
 
   /**
@@ -2593,6 +2533,10 @@ export class ChartStreamComponent {
         minConfidence: this.candleTuning.minConfidence,
         patterns: [...this.candleTuning.patterns],
         maxHits: this.candleTuning.maxHits,
+        // Lets the backend warm the trend and ATR up from the bars before the
+        // first one on screen; without it the first couple of hours of a chart
+        // opened with no history score too low to be drawn.
+        instrument: this.request()?.instrument,
       })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
@@ -2778,6 +2722,7 @@ export class ChartStreamComponent {
       (this.showRetests() ? 1 : 0) +
       (this.showMarketEngine() ? 1 : 0) +
       (this.showPreviousDayRange() ? 1 : 0) +
+      (this.showLevelRejection() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0) +
       this.selectedEmas().length +
@@ -2791,6 +2736,7 @@ export class ChartStreamComponent {
       this.retestsLoading() ||
       this.marketEngineLoading() ||
       this.pdrLoading() ||
+      this.levelRejectionLoading() ||
       this.candlePatternsLoading(),
   );
 
@@ -2807,6 +2753,7 @@ export class ChartStreamComponent {
     if (this.showRetests()) this.toggleRetests();
     if (this.showMarketEngine()) this.toggleMarketEngine();
     if (this.showPreviousDayRange()) this.togglePreviousDayRange();
+    if (this.showLevelRejection()) this.toggleLevelRejection();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
     this.clearIndicators();
@@ -2989,6 +2936,111 @@ export class ChartStreamComponent {
    * stale within a session — they come from days that have closed — so there
    * is no refresh, on a timer or otherwise.
    */
+  /**
+   * Turns the level rejection overlay on or off.
+   *
+   * On, it fetches only when nothing is held — toggling twice costs one
+   * request — over the days the chart is showing. Off, it keeps the result for
+   * an instant re-show, like the market engine.
+   */
+  toggleLevelRejection(): void {
+    const next = !this.showLevelRejection();
+    this.showLevelRejection.set(next);
+    if (next && !this.levelRejection() && !this.levelRejectionLoading()) {
+      this.fetchLevelRejection();
+    }
+    this.drawLevelRejection();
+  }
+
+  /** Asks for the levels and setups over the days the chart is showing, on the default rules. */
+  private fetchLevelRejection(): void {
+    const request = this.request();
+    const window = this.chartWindow();
+    if (!request || !window) return;
+    this.levelRejectionError.set(null);
+    this.levelRejectionLoading.set(true);
+    this.api
+      .levelRejection({
+        instrument: request.instrument,
+        from: window.from,
+        to: window.to,
+        includeComparison: false,
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.levelRejectionLoading.set(false);
+          this.levelRejection.set(result);
+          this.drawLevelRejection();
+        },
+        error: (e: ChartStreamError) => {
+          this.levelRejectionLoading.set(false);
+          this.levelRejectionError.set(`Level rejection unavailable — ${describe(e)}`);
+        },
+      });
+  }
+
+  /**
+   * The trading days the chart is showing: its first drawn bar's date to its
+   * last, or the request's date (today, live) when nothing is drawn yet.
+   */
+  private chartWindow(): { from: string; to: string } | null {
+    const request = this.request();
+    if (!request) return null;
+    const first = this.drawn[0]?.time as number | undefined;
+    const last = this.drawn.at(-1)?.time as number | undefined;
+    const fallback = request.date ?? istDateKey(Math.floor(Date.now() / 1000));
+    return {
+      from: first === undefined ? fallback : istDateKey(first),
+      to: last === undefined ? fallback : istDateKey(last),
+    };
+  }
+
+  private clearLevelRejection(): void {
+    this.levelRejection.set(null);
+    this.levelRejectionError.set(null);
+    this.drawLevelRejection();
+  }
+
+  /** The levels of the day on screen as price lines, and the marks republished. */
+  private drawLevelRejection(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.levelRejectionLines) series.removePriceLine(line);
+    this.levelRejectionLines = [];
+
+    const result = this.levelRejection();
+    if (this.showLevelRejection() && result) {
+      const last = this.drawn.at(-1)?.time as number | undefined;
+      for (const line of levelLinesAt(result.result.days, last ?? null)) {
+        this.levelRejectionLines.push(
+          series.createPriceLine({
+            price: line.price,
+            color: fade(line.color, 0.8),
+            lineWidth: 1,
+            lineStyle: LineStyle.LargeDashed,
+            lineVisible: true,
+            axisLabelVisible: true,
+            title: line.title,
+            axisLabelColor: '',
+            axisLabelTextColor: '',
+          }),
+        );
+      }
+    }
+    this.drawMarkers();
+  }
+
+  /** Marks for every setup, stopping at the close of the newest drawn bar. */
+  private levelRejectionMarks(): SeriesMarker<UTCTimestamp>[] {
+    const result = this.levelRejection();
+    const last = this.drawn.at(-1)?.time as number | undefined;
+    if (!this.showLevelRejection() || !result || last === undefined) return [];
+    const seconds = this.displaySeconds();
+    return levelRejectionMarkers(result.result.setups, seconds, (last + seconds) * 1000);
+  }
+
   togglePreviousDayRange(): void {
     const next = !this.showPreviousDayRange();
     this.showPreviousDayRange.set(next);

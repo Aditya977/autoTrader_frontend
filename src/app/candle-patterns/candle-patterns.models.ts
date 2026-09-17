@@ -1,4 +1,4 @@
-import type { ChartInterval } from '../chart-stream/chart-stream.models';
+import type { ChartInterval, InstrumentRequest } from '../chart-stream/chart-stream.models';
 
 /**
  * The vocabulary of `POST /strategy/candle-patterns`.
@@ -49,6 +49,13 @@ export interface CandlePatternsRequest {
   /** Omit for every pattern. Never send an empty array — the backend rejects it. */
   patterns?: string[];
   maxHits?: number;
+  /**
+   * The instrument the bars are from. When sent, the backend fetches the bars
+   * that closed before the first one here and uses them only to settle the
+   * trend and ATR, so a chart opened at 09:15 scores its first candles the way
+   * a chart with history behind it would.
+   */
+  instrument?: InstrumentRequest;
 }
 
 /** Which way the trend was running into the bar. `UNKNOWN` during warm-up. */
@@ -120,6 +127,8 @@ export interface CandlePatternsResponse {
   patternsFound: number;
   hits: CandlePatternHit[];
   issues: number;
+  /** Bars behind the window used only as warm-up. `0` when none could be fetched. */
+  warmupBars?: number;
   /**
    * Display names for the patterns present, from the backend.
    *
