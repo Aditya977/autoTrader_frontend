@@ -51,9 +51,9 @@ export function countLabel(n: number, one: string, many = `${one}s`): string | n
   selector: 'app-overlay-menu',
   standalone: true,
   template: `
-    <div class="menu" role="group" aria-label="Chart overlays">
+    <div class="menu" role="group" [attr.aria-label]="'Chart ' + title().toLowerCase()">
       <div class="menu-top">
-        <span class="menu-title">Overlays</span>
+        <span class="menu-title">{{ title() }}</span>
         <span class="menu-count">{{ count() ? count() + ' on' : 'None on' }}</span>
         <button type="button" class="menu-clear" [disabled]="!count()" (click)="clearAll.emit()">
           Clear all
@@ -284,9 +284,10 @@ export function countLabel(n: number, one: string, many = `${one}s`): string | n
   `,
 })
 export class OverlayMenuComponent {
-  readonly groups = input.required<readonly OverlayGroup[]>();
+  readonly title = input('Overlays');
+  readonly groups = input<readonly OverlayGroup[]>([]);
   readonly chips = input<readonly OverlayChip[]>([]);
-  /** Overlays currently on. */
+  /** Rows currently on. */
   readonly count = input(0);
   readonly clearAll = output<void>();
 }

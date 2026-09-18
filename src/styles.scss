@@ -110,7 +110,8 @@ select {
 
 select,
 input[type='date'],
-input[type='text'] {
+input[type='text'],
+input[type='number'] {
   appearance: none;
   width: 100%;
   padding: 0.5rem 2rem 0.5rem 0.65rem;
@@ -125,7 +126,8 @@ input[type='text'] {
 }
 
 input[type='date'],
-input[type='text'] {
+input[type='text'],
+input[type='number'] {
   padding-right: 0.65rem;
 }
 

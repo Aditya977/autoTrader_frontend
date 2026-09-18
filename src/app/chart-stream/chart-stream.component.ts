@@ -183,8 +183,8 @@ interface Readout {
   selector: 'app-chart-stream',
   standalone: true,
   host: {
-    '(document:click)': 'closeOverlayMenuOutside($event)',
-    '(document:keydown.escape)': 'showOverlays.set(false)',
+    '(document:click)': 'closeMenusOutside($event)',
+    '(document:keydown.escape)': 'closeMenus()',
   },
   imports: [
     PatternTimeframeTableComponent,
@@ -211,9 +211,10 @@ interface Readout {
           </span>
           <span class="bars">{{ barCount() }} bars</span>
 
-          <!-- One menu for everything drawn over the price. Six separate
-               buttons overflowed the panel at the width two legs get side by
-               side, which clipped Stop off the end of the header. -->
+          <!-- Two menus rather than one: overlays (levels, retests, patterns…)
+               and indicators (EMAs, VWAP) are different kinds of choice, and
+               splitting them keeps each dropdown to a single scannable list
+               instead of one long one with a change of subject partway down. -->
           <div class="ind">
             <button
               type="button"
@@ -233,14 +234,35 @@ interface Readout {
             </button>
 
             @if (showOverlays()) {
+              <app-overlay-menu title="Overlays" [groups]="overlayGroups" [count]="overlayCount()" (clearAll)="clearOverlays()" />
+            }
+          </div>
+
+          <div class="ind">
+            <button
+              type="button"
+              class="ghost"
+              [class.on]="indicatorCount() > 0"
+              [attr.aria-expanded]="showIndicators()"
+              aria-haspopup="true"
+              (click)="toggleIndicatorMenu()"
+            >
+              Indicators
+              @if (indicatorCount()) {
+                <i class="badge">{{ indicatorCount() }}</i>
+              }
+            </button>
+
+            @if (showIndicators()) {
               <app-overlay-menu
-                [groups]="overlayGroups"
+                title="Indicators"
                 [chips]="indicatorChips"
-                [count]="overlayCount()"
-                (clearAll)="clearOverlays()"
+                [count]="indicatorCount()"
+                (clearAll)="clearIndicators()"
               />
             }
           </div>
+
           <button type="button" class="ghost stop" (click)="stop()" [disabled]="!canStop()">
             Stop
           </button>
@@ -1249,6 +1271,9 @@ export class ChartStreamComponent {
   readonly selectedEmas = signal<readonly number[]>([]);
   /** Whether the overlay menu is open. Not persisted — a menu is not a setting. */
   readonly showOverlays = signal(false);
+  /** Whether the indicator menu is open. A separate dropdown from overlays,
+   *  so it is a separate open/closed flag. */
+  readonly showIndicators = signal(false);
   private readonly hostElement = inject(ElementRef<HTMLElement>);
 
   /**
@@ -1380,12 +1405,22 @@ export class ChartStreamComponent {
     return this.request() ? null : 'Pick an instrument to use this';
   }
 
-  /** Closes the overlay menu on a click anywhere outside it and its button. */
-  protected closeOverlayMenuOutside(event: MouseEvent): void {
-    if (!this.showOverlays()) return;
-    const menu = (this.hostElement.nativeElement as HTMLElement).querySelector('.ind');
-    if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+  /** Closes whichever menu is open on a click anywhere outside its own button. */
+  protected closeMenusOutside(event: MouseEvent): void {
+    if (!this.showOverlays() && !this.showIndicators()) return;
+    const target = event.target;
+    const inside = (el: Element | null) =>
+      !!el && target instanceof Node && el.contains(target);
+    const [overlayHost, indicatorHost] = Array.from(
+      (this.hostElement.nativeElement as HTMLElement).querySelectorAll('.ind'),
+    );
+    if (this.showOverlays() && !inside(overlayHost)) this.showOverlays.set(false);
+    if (this.showIndicators() && !inside(indicatorHost)) this.showIndicators.set(false);
+  }
+
+  protected closeMenus(): void {
     this.showOverlays.set(false);
+    this.showIndicators.set(false);
   }
   /** One line series per selected period, keyed so it can be removed. */
   private readonly emaSeries = new Map<number, ISeriesApi<'Line'>>();
@@ -2639,7 +2674,13 @@ export class ChartStreamComponent {
   /* --- indicators ---------------------------------------------------- */
 
   protected toggleOverlayMenu(): void {
+    this.showIndicators.set(false);
     this.showOverlays.update((open) => !open);
+  }
+
+  protected toggleIndicatorMenu(): void {
+    this.showOverlays.set(false);
+    this.showIndicators.update((open) => !open);
   }
 
   /**
@@ -2724,9 +2765,13 @@ export class ChartStreamComponent {
       (this.showPreviousDayRange() ? 1 : 0) +
       (this.showLevelRejection() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
-      (this.showCandlePatterns() ? 1 : 0) +
-      this.selectedEmas().length +
-      (this.showVwap() ? 1 : 0),
+      (this.showCandlePatterns() ? 1 : 0),
+  );
+
+  /** How many indicators (EMAs, VWAP) are currently drawn — the Indicators
+   *  button's own badge, separate from {@link overlayCount}. */
+  protected readonly indicatorCount = computed(
+    () => this.selectedEmas().length + (this.showVwap() ? 1 : 0),
   );
 
   /** Whether anything behind the menu is still fetching. */
@@ -2756,7 +2801,6 @@ export class ChartStreamComponent {
     if (this.showLevelRejection()) this.toggleLevelRejection();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
-    this.clearIndicators();
   }
 
   /* --- the findings panel -------------------------------------------- */

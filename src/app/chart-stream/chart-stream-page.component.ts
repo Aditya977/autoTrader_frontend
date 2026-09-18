@@ -191,188 +191,8 @@ interface ChartPanel {
 
     <main>
       <section class="controls" [class.busy]="chainLoading()">
-        <div class="fields">
-          <label>
-            <span>Mode</span>
-            <select [(ngModel)]="mode" name="mode" (ngModelChange)="onModeChange()">
-              <option value="TEST">Test — replay a past day</option>
-              <option value="LIVE">Live</option>
-            </select>
-          </label>
-
-          <label>
-            <span>Instrument</span>
-            <select [(ngModel)]="kind" name="kind" (ngModelChange)="onKindChange()">
-              @for (k of instrumentKinds; track k.value) {
-                <option [value]="k.value">{{ k.label }}</option>
-              }
-            </select>
-          </label>
-
-          <label>
-            <span>Underlying</span>
-            <select
-              [(ngModel)]="underlying"
-              name="underlying"
-              (ngModelChange)="onUnderlyingChange()"
-              [disabled]="underlyings().length === 0"
-            >
-              @for (u of underlyings(); track u) {
-                <option [value]="u">{{ u }}</option>
-              }
-            </select>
-          </label>
-
-          @if (needsExpiry()) {
-            <label>
-              <span>Expiry</span>
-              <select
-                [(ngModel)]="expiry"
-                name="expiry"
-                (ngModelChange)="onExpiryChange()"
-                [disabled]="expiries().length === 0"
-              >
-                @for (e of expiries(); track e) {
-                  <option [value]="e">{{ e }}{{ e === nextExpiry() ? ' · next' : '' }}</option>
-                }
-              </select>
-            </label>
-          }
-
-          @if (isOption()) {
-            <label class="leg call">
-              <span>Call (CE)</span>
-              <select
-                [ngModel]="callStrike()"
-                name="call"
-                (ngModelChange)="callStrike.set($event)"
-                [disabled]="calls().length === 0"
-              >
-                <option [ngValue]="null">{{ chainPlaceholder(calls().length) }}</option>
-                @for (c of calls(); track c.instrumentKey) {
-                  <option [ngValue]="c.strike">{{ optionLabel(c) }}</option>
-                }
-              </select>
-            </label>
-
-            <label class="leg put">
-              <span>Put (PE)</span>
-              <select
-                [ngModel]="putStrike()"
-                name="put"
-                (ngModelChange)="putStrike.set($event)"
-                [disabled]="puts().length === 0"
-              >
-                <option [ngValue]="null">{{ chainPlaceholder(puts().length) }}</option>
-                @for (p of puts(); track p.instrumentKey) {
-                  <option [ngValue]="p.strike">{{ optionLabel(p) }}</option>
-                }
-              </select>
-            </label>
-          }
-
-          @if (mode() === 'TEST') {
-            <label>
-              <span>Session date</span>
-              <input type="date" [(ngModel)]="date" name="date" (ngModelChange)="onDateChange()" />
-            </label>
-
-            <label>
-              <span>Replay speed</span>
-              <select [(ngModel)]="replaySpeed" name="replaySpeed">
-                @for (s of speeds; track s.value) {
-                  <option [ngValue]="s.value">{{ s.label }}</option>
-                }
-              </select>
-            </label>
-          }
-
-          <label>
-            <span>History</span>
-            <select [(ngModel)]="historyDays" name="historyDays">
-              @for (h of historyChoices; track h.value) {
-                <option [ngValue]="h.value">{{ h.label }}</option>
-              }
-            </select>
-          </label>
-
-          <label>
-            <span>Support / resistance</span>
-            <select [(ngModel)]="levelChoice" name="levels">
-              @for (l of levelChoices; track l.value) {
-                <option [ngValue]="l.value">{{ l.label }}</option>
-              }
-            </select>
-          </label>
-
-          @if (levelChoice() !== 'off') {
-            <label>
-              <span>S/R detail</span>
-              <select [(ngModel)]="levelSensitivity" name="levelSensitivity">
-                @for (s of levelSensitivities; track s.value) {
-                  <option [ngValue]="s.value">{{ s.label }}</option>
-                }
-              </select>
-            </label>
-          }
-        </div>
-
-        <div class="strategies">
-          <div class="picker">
-            <span class="ttl">Strategies</span>
-            <div class="chips">
-              @for (s of catalogue(); track s.id) {
-                <button
-                  type="button"
-                  class="chip"
-                  [class.on]="isSelected(s.id)"
-                  [attr.aria-pressed]="isSelected(s.id)"
-                  [title]="s.description"
-                  (click)="toggleStrategy(s.id)"
-                >
-                  <i class="mark">{{ isSelected(s.id) ? '✓' : '+' }}</i>
-                  {{ s.name }}
-                  <em>{{ s.timeframeMinutes }}m</em>
-                </button>
-              } @empty {
-                <span class="none">{{ catalogueNote() }}</span>
-              }
-            </div>
-          </div>
-
-          <label class="capital">
-            <span>Capital per strategy</span>
-            <input
-              type="number"
-              min="1000"
-              step="5000"
-              [(ngModel)]="capital"
-              name="capital"
-              [disabled]="selected().length === 0"
-            />
-          </label>
-
-          <label class="toggle">
-            <input
-              type="checkbox"
-              [(ngModel)]="journal"
-              name="journal"
-              [disabled]="selected().length === 0"
-            />
-            <span>Record to journal</span>
-          </label>
-        </div>
-
-        @if (selected().length) {
-          <p class="notice">
-            Each selected strategy gets its <strong>own</strong> ₹{{ capitalLabel() }} book on each
-            chart, so their results are comparable rather than competing for one pot —
-            {{ bookCount() }} book{{ bookCount() === 1 ? '' : 's' }} in total. Exits are charged ₹40
-            flat; entries are not.
-          </p>
-        }
-
-        <div class="actions">
+        <!-- Highest-priority controls: what to run, and at what bar width. -->
+        <div class="action-bar">
           <div class="timeframe" role="group" aria-label="Bar interval">
             @for (i of displayIntervals; track i.seconds) {
               <button
@@ -386,6 +206,7 @@ interface ChartPanel {
           </div>
 
           <p class="plan">{{ plan() }}</p>
+
           <button type="button" class="primary" [disabled]="starting()" (click)="start()">
             {{ starting() ? 'Starting…' : 'Start' }}
           </button>
@@ -395,19 +216,236 @@ interface ChartPanel {
           <p class="notice warn">{{ message }}</p>
         }
 
-        @if (isOption() && calls().length) {
-          <p class="notice">
-            @if (pricedOn()) {
-              Premiums are each contract's <strong>close on {{ pricedOn() }}</strong> (spot
-              {{ underlyingClose() ?? '—' }}), for the strikes nearest at-the-money; strikes further
-              out show <code>—</code> and stay selectable.
-            } @else {
-              Premiums are <strong>live last-traded</strong> from your Upstox session (spot
-              {{ underlyingClose() ?? '—' }}), for every strike in the chain.
+        <div class="groups">
+          <!-- Instrument: the fields every session needs, always visible. -->
+          <fieldset class="group">
+            <legend>Instrument</legend>
+            <div class="row">
+              <label>
+                <span>Mode</span>
+                <select [(ngModel)]="mode" name="mode" (ngModelChange)="onModeChange()">
+                  <option value="TEST">Test — replay a past day</option>
+                  <option value="LIVE">Live</option>
+                </select>
+              </label>
+
+              <label>
+                <span>Kind</span>
+                <select [(ngModel)]="kind" name="kind" (ngModelChange)="onKindChange()">
+                  @for (k of instrumentKinds; track k.value) {
+                    <option [value]="k.value">{{ k.label }}</option>
+                  }
+                </select>
+              </label>
+
+              <label>
+                <span>Underlying</span>
+                <select
+                  [(ngModel)]="underlying"
+                  name="underlying"
+                  (ngModelChange)="onUnderlyingChange()"
+                  [disabled]="underlyings().length === 0"
+                >
+                  @for (u of underlyings(); track u) {
+                    <option [value]="u">{{ u }}</option>
+                  }
+                </select>
+              </label>
+
+              @if (needsExpiry()) {
+                <label>
+                  <span>Expiry</span>
+                  <select
+                    [(ngModel)]="expiry"
+                    name="expiry"
+                    (ngModelChange)="onExpiryChange()"
+                    [disabled]="expiries().length === 0"
+                  >
+                    @for (e of expiries(); track e) {
+                      <option [value]="e">{{ e }}{{ e === nextExpiry() ? ' · next' : '' }}</option>
+                    }
+                  </select>
+                </label>
+              }
+            </div>
+
+            @if (isOption()) {
+              <div class="row legs">
+                <label class="leg call">
+                  <span>Call (CE)</span>
+                  <select
+                    [ngModel]="callStrike()"
+                    name="call"
+                    (ngModelChange)="callStrike.set($event)"
+                    [disabled]="calls().length === 0"
+                  >
+                    <option [ngValue]="null">{{ chainPlaceholder(calls().length) }}</option>
+                    @for (c of calls(); track c.instrumentKey) {
+                      <option [ngValue]="c.strike">{{ optionLabel(c) }}</option>
+                    }
+                  </select>
+                </label>
+
+                <label class="leg put">
+                  <span>Put (PE)</span>
+                  <select
+                    [ngModel]="putStrike()"
+                    name="put"
+                    (ngModelChange)="putStrike.set($event)"
+                    [disabled]="puts().length === 0"
+                  >
+                    <option [ngValue]="null">{{ chainPlaceholder(puts().length) }}</option>
+                    @for (p of puts(); track p.instrumentKey) {
+                      <option [ngValue]="p.strike">{{ optionLabel(p) }}</option>
+                    }
+                  </select>
+                </label>
+              </div>
+
+              @if (calls().length) {
+                <p class="hint">
+                  @if (pricedOn()) {
+                    Close on <strong>{{ pricedOn() }}</strong> (spot {{ underlyingClose() ?? '—' }}) —
+                    strikes far from the money show <code>—</code> but stay selectable.
+                  } @else {
+                    <strong>Live</strong> last-traded (spot {{ underlyingClose() ?? '—' }}).
+                  }
+                  Pick a call, a put, or both to chart side by side.
+                </p>
+              }
             }
-            Pick a call, a put, or both — both charts run side by side off the same clock.
-          </p>
-        }
+          </fieldset>
+
+          <!-- Replay: only meaningful in TEST mode, so it only exists then. -->
+          @if (mode() === 'TEST') {
+            <fieldset class="group">
+              <legend>Replay</legend>
+              <div class="row">
+                <label>
+                  <span>Session date</span>
+                  <input
+                    type="date"
+                    [(ngModel)]="date"
+                    name="date"
+                    (ngModelChange)="onDateChange()"
+                  />
+                </label>
+
+                <label>
+                  <span>Speed</span>
+                  <select [(ngModel)]="replaySpeed" name="replaySpeed">
+                    @for (s of speeds; track s.value) {
+                      <option [ngValue]="s.value">{{ s.label }}</option>
+                    }
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+          }
+
+          <!-- Levels & history: opt-in annotation, collapsed by default. -->
+          <details class="group collapsible">
+            <summary>
+              Levels &amp; history
+              @if (levelChoice() !== 'off') {
+                <span class="pill">{{ levelChoiceLabel() }}</span>
+              }
+            </summary>
+            <div class="row">
+              <label>
+                <span>History</span>
+                <select [(ngModel)]="historyDays" name="historyDays">
+                  @for (h of historyChoices; track h.value) {
+                    <option [ngValue]="h.value">{{ h.label }}</option>
+                  }
+                </select>
+              </label>
+
+              <label>
+                <span>Support / resistance</span>
+                <select [(ngModel)]="levelChoice" name="levels">
+                  @for (l of levelChoices; track l.value) {
+                    <option [ngValue]="l.value">{{ l.label }}</option>
+                  }
+                </select>
+              </label>
+
+              @if (levelChoice() !== 'off') {
+                <label>
+                  <span>S/R detail</span>
+                  <select [(ngModel)]="levelSensitivity" name="levelSensitivity">
+                    @for (s of levelSensitivities; track s.value) {
+                      <option [ngValue]="s.value">{{ s.label }}</option>
+                    }
+                  </select>
+                </label>
+              }
+            </div>
+          </details>
+
+          <!-- Strategies: also opt-in, collapsed by default. -->
+          <details class="group collapsible" [open]="selected().length > 0">
+            <summary>
+              Strategies
+              @if (selected().length) {
+                <span class="pill">{{ selected().length }} on</span>
+              }
+            </summary>
+
+            <div class="picker">
+              <div class="chips">
+                @for (s of catalogue(); track s.id) {
+                  <button
+                    type="button"
+                    class="chip"
+                    [class.on]="isSelected(s.id)"
+                    [attr.aria-pressed]="isSelected(s.id)"
+                    [title]="s.description"
+                    (click)="toggleStrategy(s.id)"
+                  >
+                    <i class="mark">{{ isSelected(s.id) ? '✓' : '+' }}</i>
+                    {{ s.name }}
+                    <em>{{ s.timeframeMinutes }}m</em>
+                  </button>
+                } @empty {
+                  <span class="none">{{ catalogueNote() }}</span>
+                }
+              </div>
+            </div>
+
+            <div class="row">
+              <label class="capital">
+                <span>Capital per strategy</span>
+                <input
+                  type="number"
+                  min="1000"
+                  step="5000"
+                  [(ngModel)]="capital"
+                  name="capital"
+                  [disabled]="selected().length === 0"
+                />
+              </label>
+
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  [(ngModel)]="journal"
+                  name="journal"
+                  [disabled]="selected().length === 0"
+                />
+                <span>Record to journal</span>
+              </label>
+            </div>
+
+            @if (selected().length) {
+              <p class="hint">
+                Each strategy gets its own ₹{{ capitalLabel() }} book per chart —
+                {{ bookCount() }} book{{ bookCount() === 1 ? '' : 's' }} total. Exits are charged
+                ₹40 flat; entries are not.
+              </p>
+            }
+          </details>
+        </div>
       </section>
 
       @if (run(); as r) {
@@ -527,42 +565,136 @@ interface ChartPanel {
       transition: opacity 0.15s ease;
     }
 
-    .controls.busy .fields {
+    .controls.busy .groups {
       opacity: 0.7;
     }
 
-    .fields {
+    /* --- action bar: Start + timeframe, the two things used every time --- */
+
+    .action-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.9rem;
+      padding-bottom: 0.9rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .action-bar .plan {
+      flex: 1 1 240px;
+      margin: 0;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+    }
+
+    .action-bar .primary {
+      padding: 0.55rem 1.4rem;
+      font-size: 0.85rem;
+      font-weight: 700;
+      box-shadow: 0 0 0 1px rgba(59, 167, 255, 0.15);
+    }
+
+    /* --- grouped fields: clusters instead of one flat row ---------------- */
+
+    .groups {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .group {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface-2);
+      padding: 0.75rem 0.85rem;
+      margin: 0;
+    }
+
+    fieldset.group {
+      min-width: 0;
+    }
+
+    .group legend,
+    .group summary {
+      padding: 0 0.2rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+    }
+
+    .group.collapsible summary {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0;
+      cursor: pointer;
+      list-style: none;
+    }
+
+    .group.collapsible summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .group.collapsible summary::before {
+      content: '▸';
+      font-size: 0.6rem;
+      color: var(--text-faint);
+      transition: transform 0.12s ease;
+    }
+
+    .group.collapsible[open] summary::before {
+      transform: rotate(90deg);
+    }
+
+    .group.collapsible[open] summary {
+      margin-bottom: 0.65rem;
+    }
+
+    .group summary .pill {
+      padding: 0.05rem 0.45rem;
+      border-radius: 99px;
+      background: rgba(59, 167, 255, 0.14);
+      color: var(--accent);
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .group .row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-      gap: 0.75rem 0.9rem;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 0.65rem 0.8rem;
+      margin-top: 0.65rem;
+    }
+
+    .group legend + .row,
+    .group .row:first-child {
+      margin-top: 0.65rem;
+    }
+
+    .row.legs {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
+    .group .hint {
+      margin: 0.65rem 0 0;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      color: var(--text-faint);
+    }
+
+    .group .hint code {
+      color: var(--text-muted);
     }
 
     /* --- strategy picker ------------------------------------------------- */
 
-    .strategies {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      gap: 0.75rem 1.2rem;
-      margin-top: 0.9rem;
-      padding-top: 0.85rem;
-      border-top: 1px solid var(--border);
-    }
-
     .picker {
-      flex: 1 1 340px;
       min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 0.35rem;
-    }
-
-    .picker .ttl {
-      font-size: 0.7rem;
-      font-weight: 600;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: var(--text-faint);
     }
 
     .chips {
@@ -621,15 +753,12 @@ interface ChartPanel {
       color: var(--text-faint);
     }
 
-    label.capital {
-      flex: 0 0 auto;
-      width: 170px;
-    }
-
     label.toggle {
       flex-direction: row;
       align-items: center;
       gap: 0.4rem;
+      justify-self: start;
+      align-self: end;
       padding-bottom: 0.35rem;
     }
 
@@ -679,16 +808,6 @@ interface ChartPanel {
       border-color: rgba(255, 138, 135, 0.6);
     }
 
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.75rem;
-      margin-top: 1rem;
-      padding-top: 0.9rem;
-      border-top: 1px solid var(--border);
-    }
-
     .timeframe {
       display: inline-flex;
       padding: 2px;
@@ -710,13 +829,6 @@ interface ChartPanel {
     .timeframe button.on {
       background: var(--surface-3);
       color: var(--text);
-    }
-
-    .plan {
-      flex: 1 1 240px;
-      margin: 0;
-      font-size: 0.78rem;
-      color: var(--text-muted);
     }
 
     .notice {
@@ -956,6 +1068,11 @@ export class ChartStreamPageComponent {
 
   protected readonly capitalLabel = computed(() =>
     Math.round(Number(this.capital()) || 0).toLocaleString('en-IN'),
+  );
+
+  /** The short label for the current S/R choice, for the collapsed group's pill. */
+  protected readonly levelChoiceLabel = computed(
+    () => LEVEL_CHOICES.find((l) => l.value === this.levelChoice())?.label ?? '',
   );
 
   constructor() {
