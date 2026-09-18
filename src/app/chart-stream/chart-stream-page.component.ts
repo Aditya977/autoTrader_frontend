@@ -10,6 +10,14 @@ import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.serv
 import { StrategyApiService } from '../strategy/strategy-api.service';
 import { SimulationSocketService } from '../strategy/simulation-socket.service';
 import { StrategyPanelComponent } from '../strategy/strategy-panel.component';
+import { PaperTradeService } from '../paper-trade/paper-trade.service';
+import {
+  PaperTradeSetupComponent,
+  type PaperTradeChoice,
+} from '../paper-trade/ui/paper-trade-setup.component';
+import { PaperPositionsComponent } from '../paper-trade/ui/paper-positions.component';
+import { TradeActivityComponent } from '../paper-trade/ui/trade-activity.component';
+import type { PaperContract, PaperOrderRequest } from '../paper-trade/paper-trade.models';
 import type {
   SimTrade,
   SimulationRunSnapshot,
@@ -18,6 +26,7 @@ import type {
 import { UpstoxAuthService } from '../auth/upstox-auth.service';
 import { DISPLAY_INTERVALS, intervalNameFor } from './chart-time';
 import type {
+  ChartCandleEvent,
   ChartSessionMode,
   InstrumentRequest,
   InstrumentType,
@@ -162,12 +171,34 @@ interface ChartPanel {
    * belong to the other one.
    */
   sessionId: string | null;
+  /**
+   * The contract this panel charts, when it is one that can be paper-traded.
+   *
+   * `null` for an index or a future. Not an oversight: sizing needs an
+   * instrument key, a lot size and a tick size, and the option chain is the
+   * only endpoint the page calls that supplies all three. An index carries no
+   * lot size because it is not tradable, and a future's would need a resolve
+   * call this page does not make — so rather than invent a lot size, those
+   * panels are simply not offered for paper trading.
+   */
+  contract: PaperContract | null;
+  /** `contract.instrumentKey`, hoisted — the key the feed and engine agree on. */
+  instrumentKey: string | null;
 }
 
 @Component({
   selector: 'app-chart-stream-page',
   standalone: true,
-  imports: [DatePipe, FormsModule, NavTabsComponent, ChartStreamComponent, StrategyPanelComponent],
+  imports: [
+    DatePipe,
+    FormsModule,
+    NavTabsComponent,
+    ChartStreamComponent,
+    StrategyPanelComponent,
+    PaperTradeSetupComponent,
+    PaperPositionsComponent,
+    TradeActivityComponent,
+  ],
   template: `
     <header class="topbar">
       <div class="brand">
@@ -191,32 +222,11 @@ interface ChartPanel {
 
     <main>
       <section class="controls" [class.busy]="chainLoading()">
-        <!-- Highest-priority controls: what to run, and at what bar width. -->
-        <div class="action-bar">
-          <div class="timeframe" role="group" aria-label="Bar interval">
-            @for (i of displayIntervals; track i.seconds) {
-              <button
-                type="button"
-                [class.on]="displaySeconds() === i.seconds"
-                (click)="displaySeconds.set(i.seconds)"
-              >
-                {{ i.label }}
-              </button>
-            }
-          </div>
-
-          <p class="plan">{{ plan() }}</p>
-
-          <button type="button" class="primary" [disabled]="starting()" (click)="start()">
-            {{ starting() ? 'Starting…' : 'Start' }}
-          </button>
-        </div>
-
-        @if (formError(); as message) {
-          <p class="notice warn">{{ message }}</p>
-        }
-
         <div class="groups">
+          <!-- Instrument and Replay sit side by side: TEST mode's replay
+               fields are a handful of controls, not enough to earn a full row
+               of their own next to Instrument's wider one. -->
+          <div class="top-row">
           <!-- Instrument: the fields every session needs, always visible. -->
           <fieldset class="group">
             <legend>Instrument</legend>
@@ -342,6 +352,7 @@ interface ChartPanel {
               </div>
             </fieldset>
           }
+          </div>
 
           <!-- Levels & history: opt-in annotation, collapsed by default. -->
           <details class="group collapsible">
@@ -446,11 +457,67 @@ interface ChartPanel {
             }
           </details>
         </div>
+
+        <!-- Highest-priority controls: what to run, and at what bar width.
+             Kept last so it sits immediately above the chart it starts. -->
+        <div class="action-bar">
+          <div class="timeframe" role="group" aria-label="Bar interval">
+            @for (i of displayIntervals; track i.seconds) {
+              <button
+                type="button"
+                [class.on]="displaySeconds() === i.seconds"
+                (click)="displaySeconds.set(i.seconds)"
+              >
+                {{ i.label }}
+              </button>
+            }
+          </div>
+
+          <p class="plan">{{ plan() }}</p>
+
+          <button type="button" class="primary" [disabled]="starting()" (click)="start()">
+            {{ starting() ? 'Starting…' : 'Start' }}
+          </button>
+        </div>
+
+        @if (formError(); as message) {
+          <p class="notice warn">{{ message }}</p>
+        }
       </section>
 
       @if (run(); as r) {
         <app-strategy-panel [run]="r" (stop)="stopRun()" />
       }
+
+      <!-- Paper trading. Above the chart because it is a *decision*: the
+           amount and the sizing are read before the chart is looked at, and a
+           setup form below the fold is one nobody finds. The activity feed and
+           the positions go underneath, where a result belongs. -->
+      <app-paper-trade-setup
+        [choices]="paperChoices()"
+        [error]="paperError()"
+        (placed)="placePaperTrade($event)"
+      />
+
+      <!-- The re-run, while it is happening. Without this the three minutes
+           after pressing Simulate Trade look like the stall they used to be:
+           the trade is developing, but until the strategy signals an entry
+           nothing on screen has moved yet. -->
+      @if (paper.simulating()) {
+        <section class="simulating">
+          <div class="bar"><i [style.width.%]="paper.progress() * 100"></i></div>
+          <p>
+            Replaying the recorded session — {{ simulationPct() }}%. Entries, stops and exits
+            appear as they are reached.
+          </p>
+        </section>
+      }
+
+      <app-paper-positions
+        [positions]="paper.positions()"
+        [totals]="paper.totals()"
+        (close)="closePaperTrade($event)"
+      />
 
       @if (panels().length) {
         <section class="grid" [class.pair]="panels().length > 1">
@@ -459,12 +526,16 @@ interface ChartPanel {
               [request]="panel.request"
               [sessionId]="panel.sessionId"
               [trades]="tradesFor(panel.sessionId)"
+              [paperPositions]="paper.positionsFor(keyFor(panel))"
               [label]="panel.label"
               [leg]="panel.leg"
               [displaySeconds]="displaySeconds()"
+              (candle)="onCandle(panel, $event)"
+              (sessionEnded)="onSessionEnded(keyFor(panel))"
             />
           }
         </section>
+
       } @else {
         <section class="placeholder">
           <p>Nothing streaming yet.</p>
@@ -474,6 +545,12 @@ interface ChartPanel {
           </p>
         </section>
       }
+
+      <!-- Below the chart, and outside the @if on purpose: the feed of a
+           session that has just been replaced is still the record of what
+           happened, and hiding it the moment the panels go would delete the
+           only place that record is readable. -->
+      <app-trade-activity [events]="paper.events()" />
     </main>
   `,
   styles: `
@@ -557,6 +634,35 @@ interface ChartPanel {
       gap: 1.25rem;
     }
 
+    .simulating {
+      display: grid;
+      gap: 0.4rem;
+      padding: 0.6rem 0.9rem;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      border-radius: var(--radius);
+      background: rgba(56, 189, 248, 0.07);
+    }
+
+    .simulating .bar {
+      height: 4px;
+      border-radius: 99px;
+      background: rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .simulating .bar i {
+      display: block;
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.2s linear;
+    }
+
+    .simulating p {
+      margin: 0;
+      font-size: 0.73rem;
+      color: var(--text-muted);
+    }
+
     .controls {
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -576,9 +682,9 @@ interface ChartPanel {
       flex-wrap: wrap;
       align-items: center;
       gap: 0.9rem;
-      padding-bottom: 0.9rem;
-      margin-bottom: 1rem;
-      border-bottom: 1px solid var(--border);
+      padding-top: 0.9rem;
+      margin-top: 1rem;
+      border-top: 1px solid var(--border);
     }
 
     .action-bar .plan {
@@ -601,6 +707,22 @@ interface ChartPanel {
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
+    }
+
+    .top-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    /* Instrument is the wider of the two — Kind/Underlying/Expiry plus the
+       leg pickers — so it gets more of the row than Replay's two fields. */
+    .top-row > fieldset.group:first-child {
+      flex: 2 1 360px;
+    }
+
+    .top-row > fieldset.group:last-child {
+      flex: 1 1 220px;
     }
 
     .group {
@@ -890,6 +1012,8 @@ export class ChartStreamPageComponent {
   private readonly api = inject(ChartStreamApiService);
   private readonly strategyApi = inject(StrategyApiService);
   private readonly simulation = inject(SimulationSocketService);
+  /** Protected: the template reads its positions, totals and events directly. */
+  protected readonly paper = inject(PaperTradeService);
   private readonly destroyRef = inject(DestroyRef);
   protected readonly auth = inject(UpstoxAuthService);
   private readonly router = inject(Router);
@@ -949,6 +1073,61 @@ export class ChartStreamPageComponent {
 
   protected readonly formError = signal<string | null>(null);
   protected readonly panels = signal<ChartPanel[]>([]);
+
+  /* --- paper trading ---------------------------------------------------- */
+
+  /**
+   * Why the engine refused the last order.
+   *
+   * Separate from {@link formError}, which is about starting a session: a
+   * rejected paper order leaves a perfectly good chart running, and putting the
+   * two in one field would have a sizing complaint appear above the instrument
+   * picker.
+   */
+  protected readonly paperError = signal<string | null>(null);
+
+  /**
+   * Instrument keys learned from the feed, by panel key.
+   *
+   * An option's key comes from the chain, which lists it alongside the lot size
+   * and tick size. An index or a future has no such listing on this page — but
+   * every candle carries the key of the instrument it belongs to, so the first
+   * bar a panel receives identifies it exactly. That is what lets an index or a
+   * future be paper-traded at all: the user supplies the lot size, and the feed
+   * supplies the key, and between them there is nothing left to resolve.
+   */
+  private readonly discoveredKeys = signal<ReadonlyMap<string, string>>(new Map());
+
+  /**
+   * The contracts on screen, with the best price available for each.
+   *
+   * The feed's price wins over the chain's whenever a bar has arrived: the
+   * chain is a *close* — the previous session's when live, the replayed day's
+   * when testing — and sizing a trade against it three hours into a replay
+   * would size against a number the chart has long since left behind. Until the
+   * first bar lands there is nothing better, so the chain's premium is used and
+   * labelled as such rather than showing an em dash on a contract that does
+   * have a known price.
+   */
+  protected readonly paperChoices = computed<PaperTradeChoice[]>(() => {
+    const choices: PaperTradeChoice[] = [];
+    for (const panel of this.panels()) {
+      const key = this.keyFor(panel);
+      // No key yet means no bar has arrived for this panel and the chain does
+      // not list it. There is nothing to trade against until one does.
+      if (!key) continue;
+
+      const contract = panel.contract ?? this.contractFromPanel(panel, key);
+      const live = this.paper.priceOf(key);
+      const quoted = panel.contract ? this.chainPriceFor(panel.contract) : null;
+      choices.push({
+        contract,
+        price: live ?? quoted,
+        source: live !== null ? 'feed' : 'chain',
+      });
+    }
+    return choices;
+  });
 
   /* --- strategy simulation ---------------------------------------------- */
 
@@ -1094,6 +1273,108 @@ export class ChartStreamPageComponent {
   protected tradesFor(sessionId: string | null): readonly SimTrade[] {
     if (!sessionId) return NO_TRADES;
     return this.tradesBySession().get(sessionId) ?? NO_TRADES;
+  }
+
+  /* --- paper trading ---------------------------------------------------- */
+
+  /**
+   * A bar from one of the panels, handed to the simulation engine.
+   *
+   * Every panel's candles go into the one engine, which routes them by
+   * instrument key — so a call and a put streaming side by side each mark their
+   * own positions, and a position on a contract nothing is charting simply
+   * never moves. No filtering is needed here, and doing any would be the page
+   * second-guessing a routing decision the engine already makes correctly.
+   */
+  /** Whole percent, so the label does not flicker through decimals. */
+  protected simulationPct(): number {
+    return Math.round(this.paper.progress() * 100);
+  }
+
+  protected onCandle(panel: ChartPanel, event: ChartCandleEvent): void {
+    // The first bar names the instrument. Recorded once and then left alone, so
+    // this is not a signal write per candle — an instant replay delivers a
+    // whole day in one burst, and a write per bar would be a change-detection
+    // pass per bar for a value that never changes after the first.
+    if (!this.keyFor(panel)) {
+      this.discoveredKeys.update((keys) => new Map(keys).set(panel.key, event.instrumentKey));
+    }
+    this.paper.onCandle(event);
+  }
+
+  /**
+   * The instrument key for a panel: the chain's if it had one, else the feed's.
+   *
+   * `null` only in the window between a panel starting and its first bar
+   * arriving, which for an option is never — the chain has already said.
+   */
+  protected keyFor(panel: ChartPanel): string | null {
+    return panel.instrumentKey ?? this.discoveredKeys().get(panel.key) ?? null;
+  }
+
+  /**
+   * A tradable contract for a panel the option chain never described.
+   *
+   * The lot size is deliberately `0`: this page has no honest source for an
+   * index's or a future's lot, and guessing one would size every trade wrongly
+   * while looking authoritative. The setup form asks the user for it, and
+   * refuses to place the order until it has one.
+   */
+  private contractFromPanel(panel: ChartPanel, instrumentKey: string): PaperContract {
+    return {
+      instrumentKey,
+      tradingsymbol: panel.label,
+      underlying: panel.request.instrument.underlying,
+      expiry: panel.request.instrument.expiry ?? null,
+      strike: panel.request.instrument.strike ?? null,
+      leg: panel.leg,
+      lotSize: 0,
+      tickSize: 0.05,
+    };
+  }
+
+  /**
+   * A panel's feed has ended, so anything still open on it is squared off.
+   *
+   * Scoped to the instrument rather than squaring off the book: with a call and
+   * a put on screen, one leg's replay finishing says nothing about the other,
+   * and closing both would exit a live position because an unrelated one ran
+   * out of bars.
+   */
+  protected onSessionEnded(instrumentKey: string | null): void {
+    if (!instrumentKey) return;
+    this.paper.endSession(instrumentKey);
+  }
+
+  /**
+   * Places a paper trade. Nothing is sent to a broker — see the engine.
+   *
+   * The engine re-derives the sizing and can still refuse, even though the form
+   * only enables the button on a valid plan: the price moves between the render
+   * and the click, and the engine sizing against the newer one is the whole
+   * reason it is allowed to say no.
+   */
+  protected placePaperTrade(request: PaperOrderRequest): void {
+    this.paperError.set(null);
+    const result = this.paper.place(request);
+    if ('error' in result) this.paperError.set(result.error);
+  }
+
+  /** Exits an open position at the last marked price, or drops an unfilled order. */
+  protected closePaperTrade(id: string): void {
+    this.paper.close(id);
+  }
+
+  /**
+   * The premium the option chain lists for a contract, if it lists one.
+   *
+   * Searched by instrument key rather than by strike: the two ladders are
+   * rebuilt whenever the expiry or the date changes, and a strike alone does not
+   * say which leg it belongs to.
+   */
+  private chainPriceFor(contract: PaperContract): number | null {
+    const ladder = contract.leg === 'PE' ? this.puts() : this.calls();
+    return ladder.find((c) => c.instrumentKey === contract.instrumentKey)?.ltp ?? null;
   }
 
   protected stopRun(): void {
@@ -1306,6 +1587,7 @@ export class ChartStreamPageComponent {
             { type: leg.leg, underlying, strike: leg.strike, expiry: this.expiry() },
             leg.label,
             leg.leg,
+            this.contractFor(leg.leg, leg.strike),
           ),
         )
       : [
@@ -1328,6 +1610,14 @@ export class ChartStreamPageComponent {
     // Whatever was running is finished with — its socket, and the numbers on
     // screen that belong to it.
     this.releaseRun();
+    // And the paper book with it. Its positions were marked against the series
+    // being replaced, so carrying them into a different day — or a different
+    // instrument — would show a P&L computed from one chart on top of another.
+    this.paper.reset();
+    this.paperError.set(null);
+    // Keyed by panel key, which survives a restart — so a stale entry would
+    // point a new session's panel at the previous instrument.
+    this.discoveredKeys.set(new Map());
 
     const strategies = this.selected();
     if (strategies.length === 0) {
@@ -1436,6 +1726,7 @@ export class ChartStreamPageComponent {
     instrument: InstrumentRequest,
     label: string,
     leg: 'CE' | 'PE' | null,
+    contract: PaperContract | null = null,
   ): ChartPanel {
     const live = this.mode() === 'LIVE';
     const history = Number(this.historyDays());
@@ -1480,6 +1771,31 @@ export class ChartStreamPageComponent {
       request,
       // Filled in by `start()` when a simulation supplies the session.
       sessionId: null,
+      contract,
+      instrumentKey: contract?.instrumentKey ?? null,
+    };
+  }
+
+  /**
+   * The chain row for a chosen strike, as a contract the engine can size.
+   *
+   * `null` when the ladder has no such row — a strike selected before the chain
+   * reloaded for a new date. Returning `null` costs only the paper-trade option
+   * on that panel; the chart itself still starts, because the backend resolves
+   * the instrument from the request rather than from this.
+   */
+  private contractFor(leg: 'CE' | 'PE', strike: number): PaperContract | null {
+    const row = (leg === 'CE' ? this.calls() : this.puts()).find((c) => c.strike === strike);
+    if (!row) return null;
+    return {
+      instrumentKey: row.instrumentKey,
+      tradingsymbol: row.tradingsymbol,
+      underlying: this.underlying().trim(),
+      expiry: this.expiry() || null,
+      strike: row.strike,
+      leg,
+      lotSize: row.lotSize,
+      tickSize: row.tickSize,
     };
   }
 }

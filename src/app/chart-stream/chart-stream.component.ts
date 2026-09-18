@@ -6,6 +6,7 @@ import {
   effect,
   inject,
   input,
+  output,
   signal,
   untracked,
   viewChild,
@@ -79,6 +80,7 @@ import {
 } from './chart-time';
 import {
   TERMINAL_STATUSES,
+  type ChartCandleEvent,
   type ChartInterval,
   type ChartLevels,
   type ChartRetest,
@@ -124,6 +126,8 @@ import type {
   ValidationResult,
 } from '../market-engine/market-engine.models';
 import type { SimTrade } from '../strategy/strategy.models';
+import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overlay';
+import type { PaperPosition } from '../paper-trade/paper-trade.models';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
 
@@ -1139,6 +1143,42 @@ export class ChartStreamComponent {
    */
   readonly trades = input<readonly SimTrade[]>([]);
 
+  /**
+   * Paper positions on **this panel's instrument**, drawn as entry and exit
+   * marks plus live entry, stop and target lines.
+   *
+   * Separate from {@link trades} rather than folded into one list, because the
+   * two are genuinely different objects: a `SimTrade` is a backend book's fill
+   * with its own cost model, and a `PaperPosition` is a hand-sized order that
+   * may still be waiting to fill. Flattening them would need a lossy mapping in
+   * both directions, and the chart draws them differently anyway — only the
+   * paper ones get price lines, because only they are still live decisions the
+   * user can act on.
+   */
+  readonly paperPositions = input<readonly PaperPosition[]>([]);
+
+  /**
+   * Every candle this panel receives, re-emitted for whoever is simulating on
+   * it.
+   *
+   * The chart owns the socket, so it is the only thing that sees the bars, and
+   * the paper-trade engine must not open a second session to get them — that
+   * would be a different replay, and the marks would not line up with the
+   * candles beneath them. Re-emitting is the whole integration: the page
+   * forwards these to the engine, and the engine stays ignorant of sockets.
+   */
+  readonly candle = output<ChartCandleEvent>();
+
+  /**
+   * The feed for this panel has finished — completed, stopped or errored.
+   *
+   * A simulation holding an open position needs to know, because no further
+   * price will ever arrive to move it: without this a replayed day would end
+   * with a position that reads as live, shows a P&L frozen at whatever the last
+   * bar happened to be, and can never hit its stop or its target.
+   */
+  readonly sessionEnded = output<void>();
+
   /** Human name for the panel header — the tradingsymbol, typically. */
   readonly label = input('Chart');
   /** Colours the header badge; `null` for a non-option instrument. */
@@ -1722,6 +1762,7 @@ export class ChartStreamComponent {
       // Start, and an instant replay finishes its whole simulation faster.
       this.drawLevels();
       this.drawMarkers();
+      this.drawPaperLines();
     });
 
     // Starting is driven by the input rather than by a method the parent
@@ -1750,6 +1791,21 @@ export class ChartStreamComponent {
       this.trades();
       this.displaySeconds();
       untracked(() => this.drawMarkers());
+    });
+
+    // Paper positions move both: the arrows, like any other mark, and the
+    // entry/stop/target lines, which nothing else on the chart draws. The
+    // lines are price-only and so do not depend on the interval — but the
+    // marks do, and they share this effect because a position changing has to
+    // republish both or the chart shows a stop line for a trade whose exit
+    // arrow is missing.
+    effect(() => {
+      this.paperPositions();
+      this.displaySeconds();
+      untracked(() => {
+        this.drawMarkers();
+        this.drawPaperLines();
+      });
     });
 
     // Redrawing on interval change reuses the bars already in the buffer, so
@@ -1892,6 +1948,10 @@ export class ChartStreamComponent {
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
+    // The paper lines describe prices in the series being replaced. The
+    // positions themselves are the page's to keep or clear — this only stops
+    // the old instrument's levels being drawn over the new one's bars.
+    this.drawPaperLines();
     this.redraw();
   }
 
@@ -1916,6 +1976,11 @@ export class ChartStreamComponent {
         switch (event.type) {
           case 'CANDLE':
             this.buffer.add(event);
+            // Emitted before the redraw is even scheduled: the engine reasons
+            // on bars, not on pixels, and making it wait for a canvas would
+            // mean an instant replay finished simulating a different set of
+            // bars than it drew.
+            this.candle.emit(event);
             // Batched by the microtask below rather than redrawn per bar: an
             // instant replay delivers a whole day in one burst of frames, and
             // a `setData` per frame is hundreds of full redraws for one
@@ -1938,6 +2003,11 @@ export class ChartStreamComponent {
             break;
           case 'SESSION_COMPLETED':
           case 'SESSION_STOPPED':
+            // The feed is over, so nothing will ever mark an open paper
+            // position again. Saying so lets the page square it off at the
+            // last traded price rather than leaving a position that appears
+            // live but can never move or exit.
+            this.sessionEnded.emit();
             this.session.update((s) =>
               s
                 ? { ...s, status: event.type === 'SESSION_COMPLETED' ? 'COMPLETED' : 'STOPPED' }
@@ -2384,6 +2454,45 @@ export class ChartStreamComponent {
   }
 
   /**
+   * Draws the entry, stop and target of every live paper position.
+   *
+   * Price lines rather than marks because a *level* is the whole point: a mark
+   * can say "a stop is set" but cannot say where, and where is the only thing
+   * worth drawing. They are torn down and rebuilt rather than diffed, like the
+   * S/R lines and for the same reason — at most a handful of lines, the rebuild
+   * is cheaper than the bookkeeping a correct diff would need.
+   *
+   * Only live positions contribute, so a chart does not accumulate the levels
+   * of every trade of the day; the exit arrow is the record of a closed one.
+   */
+  private drawPaperLines(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.paperLines) series.removePriceLine(line);
+    this.paperLines = [];
+
+    for (const spec of paperPriceLines(this.paperPositions())) {
+      this.paperLines.push(
+        series.createPriceLine({
+          price: spec.price,
+          color: spec.colour,
+          lineWidth: spec.width,
+          lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          lineVisible: true,
+          axisLabelVisible: true,
+          title: spec.title,
+          axisLabelColor: '',
+          axisLabelTextColor: '',
+        }),
+      );
+    }
+  }
+
+  /** The paper lines currently on the chart, so they can be removed again. */
+  private paperLines: IPriceLine[] = [];
+
+  /**
    * Draws the simulation's entry and exit arrows.
    *
    * A whole replacement set every time, like the levels: the run publishes its
@@ -2422,7 +2531,16 @@ export class ChartStreamComponent {
     // nearest one by the chart, which stacked ten days of engine history on the
     // first candle.
     return withinSeries(
-      mergeMarkers(markersFor(this.trades(), seconds), retests, engine, this.levelRejectionMarks()),
+      mergeMarkers(
+        markersFor(this.trades(), seconds),
+        // The paper book's own entries and exits. A fourth source rather than
+        // a merge with `trades`: the two describe different books, and a user
+        // running both must be able to tell which arrow was theirs.
+        paperMarkers(this.paperPositions(), seconds),
+        retests,
+        engine,
+        this.levelRejectionMarks(),
+      ),
       this.firstBarTime(),
     );
   }
