@@ -1,4 +1,5 @@
 import { PaperTradeEngine } from '../paper-trade-engine';
+import { HOLD_BARS, greenRetestHoldStrategy } from './green-retest-hold.strategy';
 import type {
   PaperContract,
   PaperMarketUpdate,
@@ -10,11 +11,17 @@ import type {
 /**
  * The rule, as timestamps.
  *
- * A green retest on the 11:14 candle buys at 11:14:58 and sells at 11:17:58,
- * and almost every test here is a way of checking one of those two clocks.
- * They are the whole strategy: the entry price is just the candle's close
- * either way, so if the stamps are wrong the journal is wrong even though the
- * P&L happens to be right — the kind of bug that survives a long time.
+ * A green retest on the 11:14 candle buys at 11:14:58 and sells
+ * {@link HOLD_BARS} candles later, also at :58. Almost every test here is a
+ * way of checking one of those two clocks. They are the whole strategy: the
+ * entry price is just the candle's close either way, so if the stamps are
+ * wrong the journal is wrong even though the P&L happens to be right — the
+ * kind of bug that survives a long time.
+ *
+ * The arithmetic below is written in terms of `HOLD_BARS` rather than a
+ * hard-coded 2, so these tests go on testing the *rule* when the holding
+ * period is changed. One test deliberately pins the current value, so a change
+ * is never silent.
  */
 
 /** 11:00 IST on the replayed day, as epoch ms. */
@@ -39,7 +46,7 @@ const CONTRACT: PaperContract = {
 function order(overrides: Partial<PaperOrderRequest> = {}): PaperOrderRequest {
   return {
     contract: CONTRACT,
-    strategyId: 'green-retest-3-candle',
+    strategyId: 'green-retest-candles',
     side: 'BUY',
     investment: 20_000,
     referencePrice: 100,
@@ -75,6 +82,19 @@ function settled(engine: PaperTradeEngine): PaperPosition[] {
 }
 
 describe('Green Retest 3-Candle Buy — timing', () => {
+  it('holds the number of candles it says it does', () => {
+    // The one deliberately brittle assertion here. Changing HOLD_BARS is a
+    // change of behaviour and should have to be stated, not absorbed.
+    expect(HOLD_BARS).toBe(2);
+    expect(greenRetestHoldStrategy.name).toBe('Green Retest 2-Candle Buy');
+  });
+
+  it('keeps its identity when the holding period changes', () => {
+    // The id is an identity, not a description: a position already open
+    // carries it, so it must not move when the number does.
+    expect(greenRetestHoldStrategy.id).toBe('green-retest-candles');
+  });
+
   it('buys 2 seconds before the signal candle closes', () => {
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(14)]);
@@ -86,17 +106,17 @@ describe('Green Retest 3-Candle Buy — timing', () => {
     expect(trade.entryTime).toBe(at(14) + 58_000);
   });
 
-  it('sells 2 seconds before the third candle after it closes', () => {
+  it('sells 2 seconds before the last held candle closes', () => {
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(14)]);
     engine.place(order());
     engine.replay(session(20));
 
     const trade = engine.snapshot().positions[0]!;
-    // 11:15, 11:16, 11:17 held; out at 11:17:58, before 11:18 begins.
-    expect(trade.exitTime).toBe(at(17) + 58_000);
+    // At HOLD_BARS = 2: 11:15 and 11:16 held, out at 11:16:58 before 11:17.
+    expect(trade.exitTime).toBe(at(14 + HOLD_BARS) + 58_000);
     expect(trade.exitReason).toBe('STRATEGY_EXIT');
-    expect(trade.exitNote).toBe('held 3 candles');
+    expect(trade.exitNote).toBe(`held ${HOLD_BARS} candles`);
   });
 
   it('computes both stamps for any signal candle', () => {
@@ -108,20 +128,21 @@ describe('Green Retest 3-Candle Buy — timing', () => {
 
       const trade = engine.snapshot().positions[0]!;
       expect(trade.entryTime).toBe(at(minute) + 58_000);
-      expect(trade.exitTime).toBe(at(minute + 3) + 58_000);
+      expect(trade.exitTime).toBe(at(minute + HOLD_BARS) + 58_000);
     }
   });
 
-  it('fills at the signal candle’s close and exits at the third candle’s', () => {
+  it('fills at the signal candle’s close and exits at the last held candle’s', () => {
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(2)]);
     engine.place(order());
-    // 11:02 closes at 120; 11:05 closes at 150.
+    // Closes rise by 10 a minute from 100 at 11:00, so the close of any
+    // candle is a stated function of its minute.
     engine.replay([bar(0, 100), bar(1, 110), bar(2, 120), bar(3, 130), bar(4, 140), bar(5, 150)]);
 
     const trade = engine.snapshot().positions[0]!;
     expect(trade.entryPrice).toBe(120);
-    expect(trade.exitPrice).toBe(150);
+    expect(trade.exitPrice).toBe(100 + (2 + HOLD_BARS) * 10);
   });
 
   it('marks the entry on the signal candle, not the one after it', () => {
@@ -134,18 +155,21 @@ describe('Green Retest 3-Candle Buy — timing', () => {
 
     const trade = engine.snapshot().positions[0]!;
     expect(Math.floor(trade.entryTime! / MINUTE) * MINUTE).toBe(at(14));
-    expect(Math.floor(trade.exitTime! / MINUTE) * MINUTE).toBe(at(17));
+    expect(Math.floor(trade.exitTime! / MINUTE) * MINUTE).toBe(at(14 + HOLD_BARS));
   });
 
   it('exits on the next candle when the due one never arrives', () => {
-    // A gap in the feed must not hold the trade open forever.
+    // A gap in the feed must not hold the trade open forever. The candle the
+    // exit is due on (11:01 + HOLD_BARS) is missing here, so it leaves on the
+    // first one after it.
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(1)]);
     engine.place(order());
-    engine.replay([bar(0, 100), bar(1, 100), bar(2, 100), bar(3, 100), bar(5, 100)]);
+    const due = 1 + HOLD_BARS;
+    engine.replay([bar(0, 100), bar(1, 100), bar(due - 1, 100), bar(due + 2, 100)]);
 
     const trade = engine.snapshot().positions[0]!;
-    expect(trade.exitTime).toBe(at(5) + 58_000);
+    expect(trade.exitTime).toBe(at(due + 2) + 58_000);
   });
 });
 
@@ -193,7 +217,8 @@ describe('Green Retest 3-Candle Buy — which signals it takes', () => {
 describe('Green Retest 3-Candle Buy — one trade at a time', () => {
   it('ignores signals while a trade is running', () => {
     const engine = new PaperTradeEngine();
-    // 11:05 signals; 11:06 and 11:07 fall inside the hold and must be skipped.
+    // 11:05 signals; 11:06 and 11:07 land inside or on the hold and must not
+    // start a second trade.
     engine.setRetests(KEY, [signal(5), signal(6), signal(7)]);
     engine.place(order());
     engine.replay(session(20));
@@ -205,7 +230,7 @@ describe('Green Retest 3-Candle Buy — one trade at a time', () => {
 
   it('takes the next signal after the trade has exited', () => {
     const engine = new PaperTradeEngine();
-    // 11:05 → out at 11:08:58. 11:12 is clear, so it trades again.
+    // 11:05 runs its hold and settles; 11:12 is well clear of it either way.
     engine.setRetests(KEY, [signal(5), signal(12)]);
     engine.place(order());
     engine.replay(session(30));
@@ -213,9 +238,9 @@ describe('Green Retest 3-Candle Buy — one trade at a time', () => {
     const trades = settled(engine);
     expect(trades.length).toBe(2);
     expect(trades[0]!.entryTime).toBe(at(5) + 58_000);
-    expect(trades[0]!.exitTime).toBe(at(8) + 58_000);
+    expect(trades[0]!.exitTime).toBe(at(5 + HOLD_BARS) + 58_000);
     expect(trades[1]!.entryTime).toBe(at(12) + 58_000);
-    expect(trades[1]!.exitTime).toBe(at(15) + 58_000);
+    expect(trades[1]!.exitTime).toBe(at(12 + HOLD_BARS) + 58_000);
   });
 
   it('keeps trading across a whole session of signals', () => {
@@ -255,12 +280,14 @@ describe('Green Retest 3-Candle Buy — what it records', () => {
     const engine = new PaperTradeEngine({ exitCost: 40 });
     engine.setRetests(KEY, [signal(1)]);
     engine.place(order());
-    engine.replay([bar(0, 100), bar(1, 100), bar(2, 105), bar(3, 110), bar(4, 120)]);
+    // 100 at the signal candle, then +10 a minute.
+    engine.replay([bar(0, 100), bar(1, 100), bar(2, 110), bar(3, 120), bar(4, 130)]);
 
+    const exitPrice = 100 + HOLD_BARS * 10;
     const trade = settled(engine)[0]!;
     expect(trade.entryPrice).toBe(100);
-    expect(trade.exitPrice).toBe(120);
-    expect(trade.grossPnl).toBeCloseTo((120 - 100) * 150, 6);
+    expect(trade.exitPrice).toBe(exitPrice);
+    expect(trade.grossPnl).toBeCloseTo((exitPrice - 100) * 150, 6);
     expect(trade.realisedPnl).toBeCloseTo(trade.grossPnl - 40, 6);
   });
 
@@ -271,7 +298,7 @@ describe('Green Retest 3-Candle Buy — what it records', () => {
     engine.replay(session(10));
 
     const trade = settled(engine)[0]!;
-    expect(trade.strategyName).toBe('Green Retest 3-Candle Buy');
+    expect(trade.strategyName).toBe(greenRetestHoldStrategy.name);
     expect(trade.contract.tradingsymbol).toBe('NIFTY 24500 CE');
     expect(trade.contract.strike).toBe(24500);
     expect(trade.contract.leg).toBe('CE');
@@ -303,16 +330,16 @@ describe('Green Retest 3-Candle Buy — what it records', () => {
     expect(trade.target).toBeNull();
   });
 
-  it('holds the full three candles through a sharp drawdown', () => {
-    // No stop means no early exit. The rule is three candles, whatever they do.
+  it('holds the full period through a sharp drawdown', () => {
+    // No stop means no early exit. The rule is the holding period, whatever
+    // the candles inside it do.
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(1)]);
     engine.place(order());
-    engine.replay([bar(0, 100), bar(1, 100), bar(2, 40), bar(3, 30), bar(4, 90)]);
+    engine.replay([bar(0, 100), bar(1, 100), bar(2, 40), bar(3, 30), bar(4, 90), bar(5, 95)]);
 
     const trade = settled(engine)[0]!;
-    expect(trade.exitTime).toBe(at(4) + 58_000);
-    expect(trade.exitPrice).toBe(90);
+    expect(trade.exitTime).toBe(at(1 + HOLD_BARS) + 58_000);
   });
 });
 

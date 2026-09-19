@@ -15,13 +15,13 @@
 
 import { breakoutStrategy } from './breakout.strategy';
 import { emaCrossoverStrategy } from './ema-crossover.strategy';
-import { greenRetest3CandleStrategy } from './green-retest-3-candle.strategy';
+import { greenRetestHoldStrategy } from './green-retest-hold.strategy';
 import { manualStrategy } from './manual.strategy';
 import type { PaperStrategy } from './paper-strategy';
 
 export const PAPER_STRATEGIES: readonly PaperStrategy[] = [
   manualStrategy,
-  greenRetest3CandleStrategy,
+  greenRetestHoldStrategy,
   emaCrossoverStrategy,
   breakoutStrategy,
 ];

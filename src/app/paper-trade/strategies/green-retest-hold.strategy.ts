@@ -1,17 +1,31 @@
 /**
- * Green Retest 3-Candle Buy.
+ * Green Retest Buy, held a fixed number of candles.
  *
  * Buy when the retest overlay prints a **green** retest on a one-minute
  * candle, two seconds before that candle closes; hold for exactly the next
- * three candles; sell two seconds before the third one closes. Long only, one
- * trade at a time, and a new one on every later signal.
+ * {@link HOLD_BARS} candles; sell two seconds before the last of them closes.
+ * Long only, one trade at a time, and a new one on every later signal.
  *
  * ```
  *   11:14  green retest signalled     → buy  at 11:14:58
  *   11:15  first held candle
- *   11:16  second held candle
- *   11:17  third held candle          → sell at 11:17:58
+ *   11:16  second held candle         → sell at 11:16:58
  * ```
+ *
+ * ## The holding period is one number
+ *
+ * {@link HOLD_BARS} is the only place it is written down: the strategy's
+ * display name, its description, its exit reason and its arithmetic all read
+ * from it. Changing 2 to 3 changes the rule and everything that describes the
+ * rule together, so the picker can never offer a "2-Candle" strategy that
+ * holds for three — which is exactly what would have happened the first time
+ * somebody edited the number and not the name.
+ *
+ * The `id` deliberately does **not** encode the count. It is an identity, not
+ * a description: a position already open carries the id of the strategy that
+ * took it, and if the id moved when the constant did, flipping the number
+ * mid-session would orphan that position and it would silently stop being
+ * processed.
  *
  * ## What "green" means, and why it is not re-derived here
  *
@@ -52,16 +66,23 @@ const BAR_MS = 60_000;
 /** Two seconds before the close of a one-minute candle. */
 const FILL_OFFSET_MS = BAR_MS - 2_000;
 
-/** Candles held after the signal candle, per the rule. */
-const HOLD_BARS = 3;
+/**
+ * Candles held after the signal candle.
+ *
+ * Currently **2**, for testing. Set it to 3 for the original rule; nothing
+ * else needs editing, because the name, the description and the exit reason
+ * are all derived from this.
+ */
+export const HOLD_BARS = 2;
 
-export const greenRetest3CandleStrategy: PaperStrategy = {
-  id: 'green-retest-3-candle',
-  name: 'Green Retest 3-Candle Buy',
+export const greenRetestHoldStrategy: PaperStrategy = {
+  // Stable across a change of holding period — see the note above.
+  id: 'green-retest-candles',
+  name: `Green Retest ${HOLD_BARS}-Candle Buy`,
   description:
     'Buys when the retest overlay prints a green (bullish) retest on a 1-minute candle, ' +
-    'entering 2 seconds before that candle closes, and sells 2 seconds before the third ' +
-    'candle after it closes. Long only, one trade at a time.',
+    `entering 2 seconds before that candle closes, and sells 2 seconds before the ` +
+    `${ordinal(HOLD_BARS)} candle after it closes. Long only, one trade at a time.`,
 
   // It reads the overlay's signals rather than the bars, so it is ready on the
   // first candle it is given one for.
@@ -144,4 +165,9 @@ export const greenRetest3CandleStrategy: PaperStrategy = {
  */
 function barOpenOf(epochMs: number): number {
   return Math.floor(epochMs / BAR_MS) * BAR_MS;
+}
+
+/** "second", "third" — so the description reads as a sentence at any hold. */
+function ordinal(n: number): string {
+  return ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth'][n] ?? `${n}th`;
 }
