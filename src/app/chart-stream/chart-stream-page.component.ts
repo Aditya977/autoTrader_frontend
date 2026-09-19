@@ -18,6 +18,7 @@ import {
 import { PaperPositionsComponent } from '../paper-trade/ui/paper-positions.component';
 import { TradeActivityComponent } from '../paper-trade/ui/trade-activity.component';
 import type { PaperContract, PaperOrderRequest } from '../paper-trade/paper-trade.models';
+import { paperStrategyById } from '../paper-trade/strategies/registry';
 import type {
   SimTrade,
   SimulationRunSnapshot,
@@ -1396,8 +1397,69 @@ export class ChartStreamPageComponent {
    */
   protected placePaperTrade(request: PaperOrderRequest): void {
     this.paperError.set(null);
+
+    // A signal strategy needs the overlay's retests in hand *before* the order
+    // is placed: the engine re-runs the recorded session the moment it accepts
+    // one, and retests arriving a round trip later would miss every signal of
+    // the morning. Fetched once per contract and then reused.
+    const strategy = paperStrategyById(request.strategyId);
+    const key = request.contract.instrumentKey;
+    if (strategy?.needsRetests && !this.paper.hasRetests(key)) {
+      this.loadRetestsThenPlace(request);
+      return;
+    }
+
+    this.commitPaperTrade(request);
+  }
+
+  private commitPaperTrade(request: PaperOrderRequest): void {
     const result = this.paper.place(request);
     if ('error' in result) this.paperError.set(result.error);
+  }
+
+  /**
+   * Fetches the retests for a contract, then places the order behind them.
+   *
+   * The **standalone** endpoint rather than the session one, and at
+   * `1minute` regardless of the interval on screen. Both parts matter: the
+   * strategy's rule is written in one-minute candles, so asking for the
+   * displayed interval would hand it signals found on 15-minute bars and its
+   * "signal candle" would mean something else entirely. The standalone
+   * endpoint takes an instrument and a date, so it also works for a session
+   * that has already completed — which, at the default replay speed, is every
+   * session by the time anyone presses the button.
+   *
+   * This is the overlay's own detection, unchanged: the same endpoint the
+   * chart's Retests toggle calls, with the same defaults.
+   */
+  private loadRetestsThenPlace(request: PaperOrderRequest): void {
+    const contract = request.contract;
+    const panel = this.panels().find((p) => this.keyFor(p) === contract.instrumentKey);
+    if (!panel) {
+      this.paperError.set('That contract is no longer charted.');
+      return;
+    }
+
+    this.paperError.set('Loading retest signals…');
+    this.api
+      .retests({
+        instrument: panel.request.instrument,
+        interval: '1minute',
+        ...(panel.request.date ? { date: panel.request.date } : {}),
+        // Unresolved retests are the ones happening *now*, which on a live
+        // chart are the only ones there are to trade.
+        includeUnresolved: true,
+      })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (found) => {
+          this.paper.setRetests(contract.instrumentKey, found.retests);
+          this.paperError.set(null);
+          this.commitPaperTrade(request);
+        },
+        error: (e: ChartStreamError) =>
+          this.paperError.set(`Could not load retest signals — ${e.message}`),
+      });
   }
 
   /** Exits an open position at the last marked price, or drops an unfilled order. */

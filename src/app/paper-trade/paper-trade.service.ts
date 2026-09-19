@@ -18,10 +18,12 @@ import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core'
 import { istDateKey } from '../chart-stream/chart-time';
 import type { ChartCandleEvent } from '../chart-stream/chart-stream.models';
 import { PaperTradeEngine } from './paper-trade-engine';
+import type { ChartRetest } from '../chart-stream/chart-stream.models';
 import type {
   PaperMarketUpdate,
   PaperOrderRequest,
   PaperPosition,
+  PaperRetestSignal,
   PaperTradeEvent,
   PaperTradeSnapshot,
 } from './paper-trade.models';
@@ -169,6 +171,21 @@ export class PaperTradeService {
    *    a reason. Accepting it would create a position that can never move,
    *    which is the silent failure this method exists to prevent.
    */
+  /**
+   * Hands the engine the retests the overlay found, as engine-shaped signals.
+   *
+   * The mapping lives here rather than in the engine because this is the layer
+   * that is allowed to know both shapes — the same reason `toUpdate` does.
+   */
+  setRetests(instrumentKey: string, retests: readonly ChartRetest[]): void {
+    this.engine.setRetests(instrumentKey, retests.map(toSignal).filter(isSignal));
+  }
+
+  /** Whether retests have been supplied for an instrument yet. */
+  hasRetests(instrumentKey: string): boolean {
+    return this.engine.hasRetests(instrumentKey);
+  }
+
   place(request: PaperOrderRequest): { position: PaperPosition } | { error: string } {
     const key = request.contract.instrumentKey;
     const recorded = this.bars.get(key) ?? [];
@@ -394,6 +411,34 @@ const NONE: readonly PaperPosition[] = [];
  * as separate events, short enough that nobody walks away from it.
  */
 const PLAYBACK_MS = 180_000;
+
+/**
+ * A chart retest → the signal a strategy sees.
+ *
+ * `approachAt ?? resumptionAt` and `direction === 'BULLISH'` are taken
+ * verbatim from how `retestMarkers` picks the marked bar and its colour, so a
+ * strategy acting on "a green retest on this candle" is acting on precisely
+ * the mark the user can see. Nothing is re-derived and nothing is filtered —
+ * the overlay's logic is the signal, untouched.
+ *
+ * `null` for a retest with neither timestamp: it has no bar to claim, which is
+ * the same reason the overlay leaves it out of the marks and in the table.
+ */
+function toSignal(retest: ChartRetest): PaperRetestSignal | null {
+  const atMs = retest.approachAt ?? retest.resumptionAt;
+  if (atMs === null) return null;
+  return {
+    atMs,
+    bullish: retest.direction === 'BULLISH',
+    quality: retest.quality,
+    valid: retest.valid,
+    scenario: retest.scenario,
+  };
+}
+
+function isSignal(signal: PaperRetestSignal | null): signal is PaperRetestSignal {
+  return signal !== null;
+}
 
 /** The one place the streaming wire format meets the engine's own. */
 export function toUpdate(event: ChartCandleEvent): PaperMarketUpdate {

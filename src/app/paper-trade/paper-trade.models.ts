@@ -222,6 +222,45 @@ export interface PaperMarketUpdate {
  */
 export type PaperSizingMode = 'AMOUNT' | 'LOTS';
 
+/**
+ * One retest, as a strategy sees it.
+ *
+ * A deliberately narrow view of the chart's `ChartRetest`, mapped in the
+ * Angular adapter, so the engine layer keeps importing nothing from
+ * `chart-stream/`. It carries only what a decision can be made from; the
+ * overlay keeps the twenty other fields it needs to draw and explain one.
+ *
+ * Nothing here re-derives anything. `atMs` and `bullish` are read straight
+ * from the retest the overlay is already drawing, by the same rules the
+ * overlay uses, so a strategy and the mark on screen can never disagree about
+ * which candle signalled.
+ */
+export interface PaperRetestSignal {
+  /**
+   * Bar open time of the candle the overlay marks, epoch ms.
+   *
+   * `approachAt ?? resumptionAt`, exactly as `retestMarkers` picks it: the bar
+   * price came *back* on, which the overlay calls "the bar a trader is
+   * deciding on". A retest that has done neither has no bar to claim and is
+   * not a signal.
+   */
+  atMs: number;
+  /**
+   * Whether the overlay draws this one green.
+   *
+   * `direction === 'BULLISH'`, which is what makes the mark the same green as
+   * an up candle. "Green retest" is a description of what is on screen, so it
+   * is defined by the same field the colour is.
+   */
+  bullish: boolean;
+  /** 0–1, as the overlay's opacity uses it. */
+  quality: number;
+  /** All three retest conditions met. */
+  valid: boolean;
+  /** The shape the backend classified it as — `exact`, `sweep`, … */
+  scenario: string;
+}
+
 /** What the setup form hands the engine when the button is pressed. */
 export interface PaperOrderRequest {
   contract: PaperContract;

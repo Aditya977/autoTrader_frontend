@@ -27,7 +27,12 @@
  * same transitions the live engine would make, which is the point of the split.
  */
 
-import type { PaperMarketUpdate, PaperPosition, PaperSide } from '../paper-trade.models';
+import type {
+  PaperMarketUpdate,
+  PaperPosition,
+  PaperRetestSignal,
+  PaperSide,
+} from '../paper-trade.models';
 
 /** One tunable number with the bounds that make it safe to tune. */
 export interface PaperParamSpec {
@@ -76,6 +81,14 @@ export interface PaperStrategyContext {
   readonly side: PaperSide;
   /** Merged defaults and overrides. */
   readonly params: Readonly<Record<string, number>>;
+  /**
+   * The retests the overlay has found for this instrument, oldest first.
+   *
+   * Empty unless the strategy asked for them with
+   * {@link PaperStrategy.needsRetests} — there is no reason to fetch and carry
+   * them for a strategy that reads price alone.
+   */
+  readonly retests: readonly PaperRetestSignal[];
 }
 
 /** Where the protective levels go, decided once, at the fill. */
@@ -94,6 +107,54 @@ export interface PaperStrategy {
   readonly id: string;
   readonly name: string;
   readonly description: string;
+
+  /* --- optional capabilities ------------------------------------------
+   *
+   * Every member below is optional and every one of them is a no-op when
+   * absent, so a strategy that does not care about it says nothing and the
+   * engine behaves for it exactly as it did before the member existed. That
+   * is the whole reason they are optional rather than required-with-defaults:
+   * adding a capability must not mean editing every strategy already written.
+   */
+
+  /**
+   * Whether this strategy reads the retest overlay's signals.
+   *
+   * Declared rather than inferred so the page knows to fetch them before the
+   * order is placed. A strategy that needs them and is run without them takes
+   * no trades at all, which looks exactly like a quiet market.
+   */
+  readonly needsRetests?: boolean;
+
+  /**
+   * Where inside its bar a fill is stamped, in milliseconds after the bar's
+   * open. Defaults to `0` — the bar's own timestamp.
+   *
+   * The engine decides on *closed* bars, so economically a fill is always at
+   * the closing price whatever this says. What it changes is the **recorded
+   * time**, and for a strategy whose rule is "enter two seconds before the
+   * candle closes" that time is the rule: a trade stamped 11:14:00 when it was
+   * taken at 11:14:58 would misreport itself in the journal and in the
+   * activity feed.
+   *
+   * It must stay inside the bar (under 60,000 for one-minute bars), because
+   * the chart snaps a mark to the bucket its timestamp falls in — overshoot it
+   * and the entry arrow moves to the following candle.
+   */
+  readonly fillOffsetMs?: number;
+
+  /**
+   * Whether one press keeps trading, or buys once and is done.
+   *
+   * `false` (the default) is a single mandate: the order fills, the position
+   * runs, and when it exits that is the end of it. `true` re-arms — as soon as
+   * a position closes the engine stands a fresh order behind it, waiting for
+   * the next signal, until the session ends or the user stops.
+   *
+   * A signal strategy is meaningless without this: it would take the first
+   * retest of the day and ignore the other eleven.
+   */
+  readonly continuous?: boolean;
   /**
    * Closed bars before the first real decision.
    *

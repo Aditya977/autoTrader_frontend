@@ -40,6 +40,7 @@ import {
   type PaperMarketUpdate,
   type PaperOrderRequest,
   type PaperPosition,
+  type PaperRetestSignal,
   type PaperTotals,
   type PaperTradeEvent,
   type PaperTradeSnapshot,
@@ -93,6 +94,21 @@ export class PaperTradeEngine {
   private readonly paramsByTrade = new Map<string, Record<string, number>>();
   /** Last price seen per instrument, for sizing a new order against the feed. */
   private readonly lastPrice = new Map<string, number>();
+
+  /**
+   * Retest signals per instrument, for the strategies that read them.
+   *
+   * Supplied from outside rather than derived here: they come from the same
+   * overlay the chart draws, and re-deriving them would mean a strategy could
+   * act on a retest the user cannot see.
+   */
+  private readonly retests = new Map<string, readonly PaperRetestSignal[]>();
+
+  /**
+   * The order behind each position, kept so a continuous strategy can be
+   * re-armed on the same terms after one of its trades settles.
+   */
+  private readonly requestByTrade = new Map<string, PaperOrderRequest>();
 
   private readonly listeners = new Set<(snapshot: PaperTradeSnapshot) => void>();
   private readonly options: Required<Omit<PaperTradeEngineOptions, 'idFactory'>>;
@@ -195,6 +211,7 @@ export class PaperTradeEngine {
     this.positions.set(id, position);
     this.order.push(id);
     this.paramsByTrade.set(id, resolveParams(strategy));
+    this.requestByTrade.set(id, request);
 
     this.record('TRADE_CREATED', position, {
       at,
@@ -294,6 +311,8 @@ export class PaperTradeEngine {
     this.events.length = 0;
     this.history.clear();
     this.paramsByTrade.clear();
+    this.requestByTrade.clear();
+    this.retests.clear();
     this.lastPrice.clear();
     this.publish();
   }
@@ -323,13 +342,23 @@ export class PaperTradeEngine {
     if (update.closed) this.appendBar(update);
 
     let changed = false;
-    for (const id of this.order) {
+    // Collected rather than opened inside the loop: `this.order` is being
+    // iterated, and standing the next order up mid-pass would let it be
+    // offered the very bar that closed its predecessor.
+    const rearm: PaperOrderRequest[] = [];
+    for (const id of [...this.order]) {
       const position = this.positions.get(id);
       if (!position) continue;
       if (position.contract.instrumentKey !== update.instrumentKey) continue;
       if (position.status === 'EXITED') continue;
 
-      changed = this.applyTo(position, update) || changed;
+      changed = this.applyTo(position, update, rearm) || changed;
+    }
+    for (const request of rearm) {
+      // A refusal here is not worth surfacing: the mandate simply cannot be
+      // re-sized at the current price, and the run is over rather than broken.
+      this.place(request);
+      changed = true;
     }
 
     // Published even when nothing transitioned, because the mark itself moved:
@@ -363,12 +392,35 @@ export class PaperTradeEngine {
     return this.lastPrice.get(instrumentKey) ?? null;
   }
 
+  /**
+   * Hands the engine the retests the overlay found for an instrument.
+   *
+   * A complete replacement, like every other set in this codebase that comes
+   * from the backend: a retest that stopped qualifying is simply absent from
+   * the next call.
+   */
+  setRetests(instrumentKey: string, signals: readonly PaperRetestSignal[]): void {
+    this.retests.set(
+      instrumentKey,
+      [...signals].sort((a, b) => a.atMs - b.atMs),
+    );
+  }
+
+  /** Whether retests have been supplied for an instrument yet. */
+  hasRetests(instrumentKey: string): boolean {
+    return this.retests.has(instrumentKey);
+  }
+
   /* ---------------------------------------------------------------------
    * Internals
    * ------------------------------------------------------------------ */
 
   /** Returns whether the position changed state (as opposed to merely marking). */
-  private applyTo(position: PaperPosition, update: PaperMarketUpdate): boolean {
+  private applyTo(
+    position: PaperPosition,
+    update: PaperMarketUpdate,
+    rearm: PaperOrderRequest[],
+  ): boolean {
     const strategy = paperStrategyById(position.strategyId);
     if (!strategy) return false;
 
@@ -376,30 +428,59 @@ export class PaperTradeEngine {
 
     if (position.status === 'CREATED') return this.tryEntry(position, update, strategy, ctx);
 
+    // The instant this bar's decisions are stamped with. The bar's own time
+    // unless the strategy says otherwise — see {@link PaperStrategy.fillOffsetMs}.
+    const at = update.timeMs + this.offsetOf(strategy);
+
     // ACTIVE from here: mark first, so an exit below settles against a position
     // whose MAE/MFE already include this update.
     const marked = this.mark(position, update);
 
     const stop = this.stopHit(marked, update);
     if (stop !== null) {
-      this.settle(marked, stop, update.timeMs, 'STOP_LOSS', { note: 'stop loss hit' });
+      this.settle(marked, stop, at, 'STOP_LOSS', { note: 'stop loss hit' });
+      this.considerRearm(strategy, marked, rearm);
       return true;
     }
 
     const target = this.targetHit(marked, update);
     if (target !== null) {
-      this.settle(marked, target, update.timeMs, 'TARGET', { note: 'target reached' });
+      this.settle(marked, target, at, 'TARGET', { note: 'target reached' });
+      this.considerRearm(strategy, marked, rearm);
       return true;
     }
 
     const exit = strategy.exit({ ...ctx, position: marked });
     if (exit) {
-      this.settle(marked, update.price, update.timeMs, 'STRATEGY_EXIT', { note: exit.reason });
+      this.settle(marked, update.price, at, 'STRATEGY_EXIT', { note: exit.reason });
+      this.considerRearm(strategy, marked, rearm);
       return true;
     }
 
     this.positions.set(marked.id, marked);
     return false;
+  }
+
+  /**
+   * Stands the next order up behind a continuous strategy's settled trade.
+   *
+   * Only after a trade the *market* closed — a stop, a target, or the
+   * strategy's own exit. A manual exit or a session square-off is the user or
+   * the clock saying stop, and re-arming through either would be the engine
+   * refusing to be switched off.
+   *
+   * Does nothing at all for an ordinary strategy, which is what keeps this an
+   * addition rather than a change: a mandate without {@link
+   * PaperStrategy.continuous} ends exactly where it always did.
+   */
+  private considerRearm(
+    strategy: PaperStrategy,
+    settled: PaperPosition,
+    rearm: PaperOrderRequest[],
+  ): void {
+    if (!strategy.continuous) return;
+    const request = this.requestByTrade.get(settled.id);
+    if (request) rearm.push(request);
   }
 
   private tryEntry(
@@ -427,26 +508,27 @@ export class PaperTradeEngine {
     // against: between placing and filling, the market moved, and pretending
     // otherwise is the single most flattering lie a paper trader can tell.
     const entryPrice = update.price;
+    const at = update.timeMs + this.offsetOf(strategy);
     const planned = strategy.plan({ ...ctx, position: null }, entryPrice);
 
     const filled: PaperPosition = {
       ...position,
       status: 'ACTIVE',
       entryPrice,
-      entryTime: update.timeMs,
+      entryTime: at,
       entryReason: signal.reason,
       // The user's own level wins where they set one; the strategy fills the rest.
       stopLoss: position.stopLoss ?? planned.stopLoss,
       target: position.target ?? planned.target,
       capitalUsed: entryPrice * position.quantity,
       currentPrice: entryPrice,
-      lastMarkedAt: update.timeMs,
+      lastMarkedAt: at,
       marksHeld: 0,
     };
 
     this.positions.set(filled.id, filled);
     this.record('TRADE_TAKEN', filled, {
-      at: update.timeMs,
+      at,
       price: entryPrice,
       message:
         `Bought ${filled.quantity} of ${filled.contract.tradingsymbol} at ₹${fmt(entryPrice)} — ` +
@@ -606,7 +688,23 @@ export class PaperTradeEngine {
       position: position.status === 'CREATED' ? null : position,
       side: position.side,
       params: this.paramsByTrade.get(position.id) ?? strategy.params,
+      // Only for a strategy that asked. Handing them to every strategy would
+      // cost a copy per bar per position for a list almost none of them read.
+      retests: strategy.needsRetests
+        ? (this.retests.get(update.instrumentKey) ?? EMPTY_RETESTS)
+        : EMPTY_RETESTS,
     };
+  }
+
+  /**
+   * Where inside its bar this strategy's fills are stamped.
+   *
+   * `0` for everything that has no opinion, which is the bar's own timestamp
+   * and exactly what the engine did before the option existed.
+   */
+  private offsetOf(strategy: PaperStrategy): number {
+    const offset = strategy.fillOffsetMs ?? 0;
+    return Number.isFinite(offset) && offset > 0 ? offset : 0;
   }
 
   /**
@@ -695,6 +793,7 @@ export class PaperTradeEngine {
  * ---------------------------------------------------------------------- */
 
 const EMPTY_BARS: readonly PaperBar[] = [];
+const EMPTY_RETESTS: readonly PaperRetestSignal[] = [];
 
 const EXIT_EVENT: Record<PaperExitReason, PaperEventKind> = {
   STOP_LOSS: 'STOP_LOSS_HIT',
