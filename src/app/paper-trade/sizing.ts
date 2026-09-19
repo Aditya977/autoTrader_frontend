@@ -19,9 +19,14 @@
 
 import type { PaperContract } from './paper-trade.models';
 
-/** Why an amount cannot be traded, when it cannot. */
+/** Why an order cannot be sized, when it cannot. */
 export type SizingProblem =
-  'NO_CONTRACT' | 'NO_PRICE' | 'NO_LOT_SIZE' | 'AMOUNT_MISSING' | 'AMOUNT_BELOW_ONE_LOT';
+  | 'NO_CONTRACT'
+  | 'NO_PRICE'
+  | 'NO_LOT_SIZE'
+  | 'AMOUNT_MISSING'
+  | 'AMOUNT_BELOW_ONE_LOT'
+  | 'LOTS_MISSING';
 
 /**
  * What an amount buys, and whether it buys anything at all.
@@ -60,19 +65,24 @@ export interface SizingPlan {
 }
 
 /**
- * How many whole lots `investment` buys of `contract` at `price`.
+ * The checks both sizing paths share — a contract, a real price, a lot size.
  *
- * Deliberately total: every bad input produces a plan that is simply invalid
- * with a reason, rather than a throw. The form calls this on every keystroke,
- * including the keystroke that leaves the field empty.
+ * Extracted so the two entry points cannot drift apart. They ask different
+ * questions of the user but the instrument has to be tradable either way, and
+ * two copies of "is this an untraded strike" is exactly the sort of thing that
+ * ends up fixed in one of them.
+ *
+ * Returns the invalid plan to hand straight back, or the shared base to build
+ * a valid one on.
  */
-export function planSize(
+function checkInstrument(
   contract: Pick<PaperContract, 'lotSize'> | null,
   price: number | null,
-  investment: number | null,
-): SizingPlan {
+  investment: number,
+):
+  | { fail: SizingPlan }
+  | { base: Omit<SizingPlan, 'valid' | 'problem' | 'message'>; costPerLot: number } {
   const lotSize = Math.trunc(contract?.lotSize ?? 0);
-  const amount = Number(investment);
   const premium = Number(price);
 
   const base = {
@@ -84,39 +94,114 @@ export function planSize(
     requiredCapital: 0,
     orderValue: 0,
     leftover: 0,
-    investment: Number.isFinite(amount) ? amount : 0,
+    investment: Number.isFinite(investment) ? investment : 0,
     shortfall: 0,
   };
 
   if (!contract) {
-    return { ...base, valid: false, problem: 'NO_CONTRACT', message: 'Select a contract.' };
+    return {
+      fail: { ...base, valid: false, problem: 'NO_CONTRACT', message: 'Select a contract.' },
+    };
   }
   // A price of exactly 0 is not a cheap option, it is an untraded strike the
   // chain reported no premium for. Sizing against it would divide by zero and
   // offer an infinite quantity.
   if (!Number.isFinite(premium) || premium <= 0) {
     return {
-      ...base,
-      valid: false,
-      problem: 'NO_PRICE',
-      message: 'No live price for this contract yet.',
+      fail: {
+        ...base,
+        valid: false,
+        problem: 'NO_PRICE',
+        message: 'No live price for this contract yet.',
+      },
     };
   }
   if (lotSize <= 0) {
     return {
-      ...base,
-      valid: false,
-      problem: 'NO_LOT_SIZE',
-      message: 'Enter the lot size for this contract.',
+      fail: {
+        ...base,
+        valid: false,
+        problem: 'NO_LOT_SIZE',
+        message: 'Enter the lot size for this contract.',
+      },
     };
   }
 
   const costPerLot = premium * lotSize;
+  return { base: { ...base, costPerLot }, costPerLot };
+}
+
+/**
+ * How many whole lots `lots` is, and what it costs — the user naming the size.
+ *
+ * The counterpart to {@link planSize}, for a trader who thinks in lots rather
+ * than in rupees, which is how most option positions are actually described
+ * ("two lots of the 24500 call", not "fourteen thousand rupees of it").
+ *
+ * There is no budget to fail against here: the user has stated the size they
+ * want, so `investment` is an *output* — the capital that size requires —
+ * rather than a cap the size is squeezed into. That asymmetry is the whole
+ * difference between the two functions, and it is why `leftover` is always
+ * zero on this path: nothing was left over, because nothing was being divided
+ * up.
+ */
+export function planLots(
+  contract: Pick<PaperContract, 'lotSize'> | null,
+  price: number | null,
+  lots: number | null,
+): SizingPlan {
+  const wanted = Math.trunc(Number(lots));
+  const checked = checkInstrument(contract, price, 0);
+  if ('fail' in checked) return checked.fail;
+
+  const { base, costPerLot } = checked;
+
+  if (!Number.isFinite(wanted) || wanted < 1) {
+    return { ...base, valid: false, problem: 'LOTS_MISSING', message: 'Enter at least one lot.' };
+  }
+
+  const quantity = wanted * base.lotSize;
+  const requiredCapital = base.price * quantity;
+
+  return {
+    ...base,
+    valid: true,
+    problem: null,
+    message: '',
+    lots: wanted,
+    quantity,
+    requiredCapital,
+    orderValue: requiredCapital,
+    // The capital the chosen size demands. Reported as the investment so the
+    // engine, which sizes from this figure, commits exactly what was asked for.
+    investment: requiredCapital,
+    leftover: 0,
+  };
+}
+
+/**
+ * How many whole lots `investment` buys of `contract` at `price`.
+ *
+ * Deliberately total: every bad input produces a plan that is simply invalid
+ * with a reason, rather than a throw. The form calls this on every keystroke,
+ * including the keystroke that leaves the field empty.
+ */
+export function planSize(
+  contract: Pick<PaperContract, 'lotSize'> | null,
+  price: number | null,
+  investment: number | null,
+): SizingPlan {
+  const amount = Number(investment);
+  const checked = checkInstrument(contract, price, amount);
+  if ('fail' in checked) return checked.fail;
+
+  const { base, costPerLot } = checked;
+  const lotSize = base.lotSize;
+  const premium = base.price;
 
   if (!Number.isFinite(amount) || amount <= 0) {
     return {
       ...base,
-      costPerLot,
       valid: false,
       problem: 'AMOUNT_MISSING',
       message: 'Enter the amount to invest.',
@@ -127,7 +212,6 @@ export function planSize(
   if (lots < 1) {
     return {
       ...base,
-      costPerLot,
       shortfall: costPerLot - amount,
       valid: false,
       problem: 'AMOUNT_BELOW_ONE_LOT',
@@ -147,7 +231,6 @@ export function planSize(
     message: '',
     lots,
     quantity,
-    costPerLot,
     requiredCapital,
     orderValue: requiredCapital,
     leftover: amount - requiredCapital,

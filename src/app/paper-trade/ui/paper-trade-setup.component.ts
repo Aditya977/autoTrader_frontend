@@ -17,9 +17,9 @@
 
 import { Component, computed, effect, input, output, signal, untracked } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import type { PaperContract, PaperOrderRequest } from '../paper-trade.models';
+import type { PaperContract, PaperOrderRequest, PaperSizingMode } from '../paper-trade.models';
 
-import { planSize } from '../sizing';
+import { planLots, planSize } from '../sizing';
 import { DEFAULT_PAPER_STRATEGY_ID, PAPER_STRATEGIES } from '../strategies/registry';
 
 /**
@@ -92,18 +92,55 @@ export interface PaperTradeChoice {
           </select>
         </label>
 
-        <label>
-          <span>Investment (₹)</span>
-          <input
-            type="number"
-            min="0"
-            step="1000"
-            [ngModel]="investment()"
-            name="paperInvestment"
-            (ngModelChange)="investment.set($event)"
-            [disabled]="!selected()"
-          />
-        </label>
+        <div class="sizeby">
+          <span>Size by</span>
+          <div class="seg" role="group" aria-label="Size the order by">
+            <button
+              type="button"
+              [class.on]="sizingMode() === 'AMOUNT'"
+              [attr.aria-pressed]="sizingMode() === 'AMOUNT'"
+              (click)="sizeBy('AMOUNT')"
+            >
+              Amount
+            </button>
+            <button
+              type="button"
+              [class.on]="sizingMode() === 'LOTS'"
+              [attr.aria-pressed]="sizingMode() === 'LOTS'"
+              (click)="sizeBy('LOTS')"
+            >
+              Lots
+            </button>
+          </div>
+        </div>
+
+        @if (sizingMode() === 'AMOUNT') {
+          <label>
+            <span>Investment (₹)</span>
+            <input
+              type="number"
+              min="0"
+              step="1000"
+              [ngModel]="investment()"
+              name="paperInvestment"
+              (ngModelChange)="investment.set($event)"
+              [disabled]="!selected()"
+            />
+          </label>
+        } @else {
+          <label>
+            <span>Number of lots</span>
+            <input
+              type="number"
+              min="1"
+              step="1"
+              [ngModel]="lots()"
+              name="paperLots"
+              (ngModelChange)="lots.set($event)"
+              [disabled]="!selected()"
+            />
+          </label>
+        }
       </div>
 
       @if (choices().length === 0) {
@@ -185,8 +222,14 @@ export interface PaperTradeChoice {
           <dd>{{ plan().orderValue ? '₹' + money(plan().orderValue) : '—' }}</dd>
         </div>
         <div>
-          <dt>Unused</dt>
-          <dd>{{ plan().valid ? '₹' + money(plan().leftover) : '—' }}</dd>
+          <dt>{{ sizingMode() === 'AMOUNT' ? 'Unused' : 'Cost per lot' }}</dt>
+          <dd>
+            @if (sizingMode() === 'AMOUNT') {
+              {{ plan().valid ? '₹' + money(plan().leftover) : '—' }}
+            } @else {
+              {{ plan().costPerLot ? '₹' + money(plan().costPerLot) : '—' }}
+            }
+          </dd>
         </div>
       </dl>
 
@@ -278,6 +321,36 @@ export interface PaperTradeChoice {
       color: var(--text);
       font-size: 0.8rem;
       font-variant-numeric: tabular-nums;
+    }
+
+    .sizeby {
+      display: grid;
+      gap: 0.25rem;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      flex: 0 0 auto;
+    }
+
+    .seg {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .seg button {
+      padding: 0.4rem 0.7rem;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+
+    .seg button.on {
+      background: var(--accent);
+      color: #06121d;
+      font-weight: 600;
     }
 
     .note {
@@ -445,6 +518,22 @@ export class PaperTradeSetupComponent {
   protected readonly investment = signal<number>(20_000);
 
   /**
+   * Whether the user is naming a budget or a size.
+   *
+   * Both are legitimate ways to describe the same order and neither derives
+   * cleanly from the other, because lots are whole: "₹20,000" becomes two lots
+   * and ₹5,900 idle, and "two lots" becomes whatever two lots happen to cost.
+   * Which one the user typed is therefore the one to preserve, and the other
+   * is the one that moves — which is what the engine is told, so a price tick
+   * between the preview and the click cannot quietly change the answer the
+   * user gave.
+   */
+  protected readonly sizingMode = signal<PaperSizingMode>('AMOUNT');
+
+  /** Lots, when the user is sizing by them. */
+  protected readonly lots = signal<number>(1);
+
+  /**
    * The lot size to size against — the user's, not necessarily the exchange's.
    *
    * Editable rather than read-only for two reasons. It lets an instrument the
@@ -485,7 +574,9 @@ export class PaperTradeSetupComponent {
 
   /** The sizing, recomputed on every keystroke and every tick of the feed. */
   protected readonly plan = computed(() =>
-    planSize(this.contract(), this.price(), Number(this.investment())),
+    this.sizingMode() === 'LOTS'
+      ? planLots(this.contract(), this.price(), Number(this.lots()))
+      : planSize(this.contract(), this.price(), Number(this.investment())),
   );
 
   protected readonly strategyName = computed(
@@ -529,6 +620,26 @@ export class PaperTradeSetupComponent {
     });
   }
 
+  /**
+   * Switches which number the user is naming, carrying the current answer over.
+   *
+   * Moving to lots starts from what the budget already allowed rather than
+   * from 1, so the toggle reads as a change of *units* rather than as a reset —
+   * somebody who typed ₹20,000, saw "2 lots", and switched to lots to nudge it
+   * to 3 would otherwise find a 1 waiting for them.
+   */
+  protected sizeBy(mode: PaperSizingMode): void {
+    if (mode === 'LOTS' && this.sizingMode() === 'AMOUNT') {
+      const affordable = this.plan().lots;
+      if (affordable > 0) this.lots.set(affordable);
+    }
+    if (mode === 'AMOUNT' && this.sizingMode() === 'LOTS') {
+      const needed = this.plan().requiredCapital;
+      if (needed > 0) this.investment.set(Math.ceil(needed));
+    }
+    this.sizingMode.set(mode);
+  }
+
   protected submit(): void {
     const contract = this.contract();
     const plan = this.plan();
@@ -541,7 +652,10 @@ export class PaperTradeSetupComponent {
       // rather than debit — and the sizing above would be wrong for it, so the
       // form does not offer one until the margin model does.
       side: 'BUY',
-      investment: Number(this.investment()),
+      sizing: this.sizingMode(),
+      // The plan's figure, so sizing by lots reports the capital the size
+      // actually needs rather than a budget the user never typed.
+      investment: plan.investment,
       referencePrice: plan.price,
       lots: plan.lots,
       quantity: plan.quantity,

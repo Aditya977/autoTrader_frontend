@@ -264,6 +264,48 @@ describe('PaperTradeEngine sizing and refusal', () => {
     expect(only(engine).quantity).toBe(75);
   });
 
+  it('keeps the lots the user asked for when the price moves', () => {
+    const engine = new PaperTradeEngine();
+    // Sized at ₹100 in the form; the feed has since moved to ₹140. Somebody
+    // who asked for two lots still wants two — the cost is what gives, not the
+    // size they already decided on.
+    engine.onUpdate(bar(0, 140));
+    engine.place(order({ sizing: 'LOTS', lots: 2, referencePrice: 100 }));
+
+    const position = only(engine);
+    expect(position.lots).toBe(2);
+    expect(position.quantity).toBe(150);
+    // And the committed figure is what that size actually costs now.
+    expect(position.investment).toBeCloseTo(140 * 150, 6);
+  });
+
+  it('still trims the lots when sizing by amount', () => {
+    // The complement of the test above, and the reason the two modes cannot
+    // share one behaviour: here the budget is fixed and the size gives way.
+    const engine = new PaperTradeEngine();
+    engine.onUpdate(bar(0, 140));
+    engine.place(order({ sizing: 'AMOUNT', investment: 20_000 }));
+
+    expect(only(engine).lots).toBe(1);
+  });
+
+  it('sizes by amount when the request does not say', () => {
+    // The default, so an older caller that predates the mode keeps working.
+    const engine = new PaperTradeEngine();
+    engine.onUpdate(bar(0, 100));
+    engine.place(order({ investment: 20_000 }));
+    expect(only(engine).lots).toBe(2);
+  });
+
+  it('refuses a lots order that names no lots', () => {
+    const engine = new PaperTradeEngine();
+    engine.onUpdate(bar(0, 100));
+    const result = engine.place(order({ sizing: 'LOTS', lots: 0 }));
+
+    expect('error' in result).toBe(true);
+    expect(engine.snapshot().positions.length).toBe(0);
+  });
+
   it('refuses an order the money cannot cover, and books nothing', () => {
     const engine = new PaperTradeEngine();
     const result = engine.place(order({ investment: 500 }));

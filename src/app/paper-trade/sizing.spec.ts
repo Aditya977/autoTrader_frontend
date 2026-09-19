@@ -1,4 +1,4 @@
-import { grossPnlFor, planSize, pnlPct } from './sizing';
+import { grossPnlFor, planLots, planSize, pnlPct } from './sizing';
 import type { PaperContract } from './paper-trade.models';
 
 const NIFTY: PaperContract = {
@@ -63,6 +63,54 @@ describe('planSize', () => {
     expect(planSize(NIFTY, 94, null).problem).toBe('AMOUNT_MISSING');
     expect(planSize(NIFTY, 94, NaN).problem).toBe('AMOUNT_MISSING');
     expect(planSize({ lotSize: 0 }, 94, 20_000).problem).toBe('NO_LOT_SIZE');
+  });
+});
+
+describe('planLots', () => {
+  it('costs out the size the user asked for', () => {
+    // Two lots of 75 at ₹94. The user named the size; the cost follows.
+    const plan = planLots(NIFTY, 94, 2);
+
+    expect(plan.valid).toBe(true);
+    expect(plan.lots).toBe(2);
+    expect(plan.quantity).toBe(150);
+    expect(plan.requiredCapital).toBeCloseTo(14_100, 6);
+    expect(plan.orderValue).toBe(plan.requiredCapital);
+    // The investment is an output here, not a budget that was divided up.
+    expect(plan.investment).toBeCloseTo(14_100, 6);
+    expect(plan.leftover).toBe(0);
+  });
+
+  it('has no budget to fall short of', () => {
+    // The size the user asked for is the size, however large. There is no
+    // amount to compare it against on this path.
+    const plan = planLots(NIFTY, 94, 40);
+    expect(plan.valid).toBe(true);
+    expect(plan.quantity).toBe(3_000);
+    expect(plan.requiredCapital).toBeCloseTo(282_000, 6);
+  });
+
+  it('needs at least one whole lot', () => {
+    expect(planLots(NIFTY, 94, 0).problem).toBe('LOTS_MISSING');
+    expect(planLots(NIFTY, 94, null).problem).toBe('LOTS_MISSING');
+    expect(planLots(NIFTY, 94, -2).problem).toBe('LOTS_MISSING');
+    // A fraction of a lot is not a smaller trade, it is a rejected order.
+    expect(planLots(NIFTY, 94, 0.5).problem).toBe('LOTS_MISSING');
+  });
+
+  it('shares the instrument checks with the amount path', () => {
+    expect(planLots(null, 94, 2).problem).toBe('NO_CONTRACT');
+    expect(planLots(NIFTY, null, 2).problem).toBe('NO_PRICE');
+    expect(planLots(NIFTY, 0, 2).problem).toBe('NO_PRICE');
+    expect(planLots({ lotSize: 0 }, 94, 2).problem).toBe('NO_LOT_SIZE');
+  });
+
+  it('round-trips against planSize for the amount it reports', () => {
+    // Switching the form from lots to amount and back must not change the
+    // size — the figure one path reports has to be one the other accepts.
+    const byLots = planLots(NIFTY, 94, 3);
+    const byAmount = planSize(NIFTY, 94, byLots.investment);
+    expect(byAmount.lots).toBe(3);
   });
 });
 

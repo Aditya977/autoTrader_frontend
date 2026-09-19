@@ -203,15 +203,37 @@ export interface PaperMarketUpdate {
   closed: boolean;
 }
 
+/**
+ * Which number the user actually chose, and which one follows from it.
+ *
+ * Load-bearing, not bookkeeping. The engine re-sizes every order against the
+ * live price rather than trusting the form's preview, and what "re-size" means
+ * is the opposite in each case:
+ *
+ * - `AMOUNT` — the budget is fixed and the **lots** move. A price that rose
+ *   between the preview and the click buys fewer lots, which is the whole
+ *   protection against over-committing on a stale quote.
+ * - `LOTS` — the size is fixed and the **cost** moves. Somebody who asked for
+ *   two lots wants two lots; silently filling one because the premium ticked up
+ *   would be the engine overruling a decision the user had already made.
+ *
+ * Collapsing the two would force one of those behaviours onto both, and there
+ * is no single answer that is right for both questions.
+ */
+export type PaperSizingMode = 'AMOUNT' | 'LOTS';
+
 /** What the setup form hands the engine when the button is pressed. */
 export interface PaperOrderRequest {
   contract: PaperContract;
   strategyId: string;
   side: PaperSide;
-  /** Rupees the user is willing to commit. */
+  /** Which of `investment` and `lots` the user set. Defaults to `AMOUNT`. */
+  sizing?: PaperSizingMode;
+  /** Rupees the user is willing to commit. Derived when sizing by lots. */
   investment: number;
   /** The price the plan was made against — the quote on screen. */
   referencePrice: number;
+  /** Lots the user asked for. Authoritative only when sizing by `LOTS`. */
   lots: number;
   quantity: number;
   /** Overrides the strategy's own plan when set. */

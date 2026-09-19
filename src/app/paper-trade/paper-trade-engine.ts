@@ -44,7 +44,7 @@ import {
   type PaperTradeEvent,
   type PaperTradeSnapshot,
 } from './paper-trade.models';
-import { grossPnlFor, planSize, pnlPct } from './sizing';
+import { grossPnlFor, planLots, planSize, pnlPct } from './sizing';
 import {
   type PaperBar,
   type PaperStrategy,
@@ -136,7 +136,13 @@ export class PaperTradeEngine {
     if (!strategy) return { error: `Unknown strategy “${request.strategyId}”.` };
 
     const price = this.lastPrice.get(request.contract.instrumentKey) ?? request.referencePrice;
-    const plan = planSize(request.contract, price, request.investment);
+    // Re-sized against the live price either way — the form's preview may be a
+    // few seconds and several rupees stale — but along the axis the user left
+    // free. See {@link PaperSizingMode}.
+    const plan =
+      request.sizing === 'LOTS'
+        ? planLots(request.contract, price, request.lots)
+        : planSize(request.contract, price, request.investment);
     if (!plan.valid) return { error: plan.message };
 
     const id = this.newId();
@@ -152,7 +158,10 @@ export class PaperTradeEngine {
       contract: request.contract,
       side: request.side,
       status: 'CREATED',
-      investment: request.investment,
+      // The plan's figure, not the request's: sizing by lots derives the
+      // investment from the size, and echoing the request here would show a
+      // committed amount that the fill does not match.
+      investment: plan.investment,
       lots: plan.lots,
       lotSize: plan.lotSize,
       quantity: plan.quantity,
