@@ -6,6 +6,7 @@ import {
   effect,
   inject,
   input,
+  output,
   signal,
   untracked,
   viewChild,
@@ -79,6 +80,7 @@ import {
 } from './chart-time';
 import {
   TERMINAL_STATUSES,
+  type ChartCandleEvent,
   type ChartInterval,
   type ChartLevels,
   type ChartRetest,
@@ -124,6 +126,8 @@ import type {
   ValidationResult,
 } from '../market-engine/market-engine.models';
 import type { SimTrade } from '../strategy/strategy.models';
+import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overlay';
+import type { PaperPosition } from '../paper-trade/paper-trade.models';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
 
@@ -1139,6 +1143,67 @@ export class ChartStreamComponent {
    */
   readonly trades = input<readonly SimTrade[]>([]);
 
+  /**
+   * Paper positions on **this panel's instrument**, drawn as entry and exit
+   * marks plus live entry, stop and target lines.
+   *
+   * Separate from {@link trades} rather than folded into one list, because the
+   * two are genuinely different objects: a `SimTrade` is a backend book's fill
+   * with its own cost model, and a `PaperPosition` is a hand-sized order that
+   * may still be waiting to fill. Flattening them would need a lossy mapping in
+   * both directions, and the chart draws them differently anyway — only the
+   * paper ones get price lines, because only they are still live decisions the
+   * user can act on.
+   */
+  readonly paperPositions = input<readonly PaperPosition[]>([]);
+
+  /**
+   * Draw the session only as far as this instant — the replay cursor.
+   *
+   * `null` is the normal chart: draw everything the buffer holds.
+   *
+   * This is what makes a paper trade watchable. The bars are all here already
+   * (an instant replay delivered the whole day in under a second), so a
+   * simulation that merely animated its *own* numbers would be doing so over a
+   * chart that had already given away the ending — the stop it is about to hit
+   * is sitting on screen the whole time. Truncating the drawn series to the
+   * bar the simulation has reached rewinds the chart to 09:15 and lets the day
+   * arrive one bar at a time.
+   *
+   * Everything derived follows for free, because everything derived is
+   * computed from the drawn series rather than from the buffer: EMAs, VWAP,
+   * chart patterns, candlestick boxes and the previous-day lines all recompute
+   * against the truncated set, and the timestamped marks are clipped to it. So
+   * the overlays plot as the day unfolds instead of being complete from the
+   * first frame.
+   *
+   * Nothing is lost by truncating: the buffer is untouched, so clearing this
+   * back to `null` redraws the whole session exactly as it was.
+   */
+  readonly playbackUntilMs = input<number | null>(null);
+
+  /**
+   * Every candle this panel receives, re-emitted for whoever is simulating on
+   * it.
+   *
+   * The chart owns the socket, so it is the only thing that sees the bars, and
+   * the paper-trade engine must not open a second session to get them — that
+   * would be a different replay, and the marks would not line up with the
+   * candles beneath them. Re-emitting is the whole integration: the page
+   * forwards these to the engine, and the engine stays ignorant of sockets.
+   */
+  readonly candle = output<ChartCandleEvent>();
+
+  /**
+   * The feed for this panel has finished — completed, stopped or errored.
+   *
+   * A simulation holding an open position needs to know, because no further
+   * price will ever arrive to move it: without this a replayed day would end
+   * with a position that reads as live, shows a P&L frozen at whatever the last
+   * bar happened to be, and can never hit its stop or its target.
+   */
+  readonly sessionEnded = output<void>();
+
   /** Human name for the panel header — the tradingsymbol, typically. */
   readonly label = input('Chart');
   /** Colours the header badge; `null` for a non-option instrument. */
@@ -1722,6 +1787,7 @@ export class ChartStreamComponent {
       // Start, and an instant replay finishes its whole simulation faster.
       this.drawLevels();
       this.drawMarkers();
+      this.drawPaperLines();
     });
 
     // Starting is driven by the input rather than by a method the parent
@@ -1750,6 +1816,55 @@ export class ChartStreamComponent {
       this.trades();
       this.displaySeconds();
       untracked(() => this.drawMarkers());
+    });
+
+    // Paper positions move both: the arrows, like any other mark, and the
+    // entry/stop/target lines, which nothing else on the chart draws. The
+    // lines are price-only and so do not depend on the interval — but the
+    // marks do, and they share this effect because a position changing has to
+    // republish both or the chart shows a stop line for a trade whose exit
+    // arrow is missing.
+    effect(() => {
+      this.paperPositions();
+      this.displaySeconds();
+      untracked(() => {
+        this.drawMarkers();
+        this.drawPaperLines();
+      });
+    });
+
+    // The replay cursor. A full redraw per step rather than an append, because
+    // every overlay is derived from the drawn series and has to be re-derived
+    // against the shorter one — an appended bar would leave the EMAs, the
+    // patterns and the clipped marks describing a series that no longer
+    // matches what is on screen.
+    //
+    // `refit` keeps the whole replayed span in view as it grows, which is what
+    // the chart already does for bars arriving live, so a replay looks like the
+    // session it is imitating rather than like a chart being scrolled.
+    effect(() => {
+      const until = this.playbackUntilMs();
+      untracked(() => {
+        // A cursor that moved *backwards* is a different series, not a longer
+        // one: the replay restarting, or ending and restoring the full day. The
+        // live tracker holds state about bars that are no longer drawn, so it
+        // has to be reset and the scan forced. A cursor moving forwards is
+        // exactly the live-feed case — one more bar on the end — which the
+        // incremental scan inside `redraw` already handles, and forcing it per
+        // bar would run full pattern detection 375 times for one replay.
+        const rewound = until === null || this.lastCursor === null || until < this.lastCursor;
+        this.lastCursor = until;
+
+        if (rewound) this.tracker.reset();
+        this.redraw({ refit: true });
+        if (rewound) this.refreshPatterns({ force: true });
+
+        // Marks are clipped to the newest drawn bar while replaying, and
+        // `redraw` only republishes them when the *left* edge moves — which it
+        // never does here. Without this the day's entries, exits and engine
+        // marks would stay hidden for the whole replay.
+        this.drawMarkers();
+      });
     });
 
     // Redrawing on interval change reuses the bars already in the buffer, so
@@ -1892,6 +2007,10 @@ export class ChartStreamComponent {
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
+    // The paper lines describe prices in the series being replaced. The
+    // positions themselves are the page's to keep or clear — this only stops
+    // the old instrument's levels being drawn over the new one's bars.
+    this.drawPaperLines();
     this.redraw();
   }
 
@@ -1916,6 +2035,11 @@ export class ChartStreamComponent {
         switch (event.type) {
           case 'CANDLE':
             this.buffer.add(event);
+            // Emitted before the redraw is even scheduled: the engine reasons
+            // on bars, not on pixels, and making it wait for a canvas would
+            // mean an instant replay finished simulating a different set of
+            // bars than it drew.
+            this.candle.emit(event);
             // Batched by the microtask below rather than redrawn per bar: an
             // instant replay delivers a whole day in one burst of frames, and
             // a `setData` per frame is hundreds of full redraws for one
@@ -1938,6 +2062,11 @@ export class ChartStreamComponent {
             break;
           case 'SESSION_COMPLETED':
           case 'SESSION_STOPPED':
+            // The feed is over, so nothing will ever mark an open paper
+            // position again. Saying so lets the page square it off at the
+            // last traded price rather than leaving a position that appears
+            // live but can never move or exit.
+            this.sessionEnded.emit();
             this.session.update((s) =>
               s
                 ? { ...s, status: event.type === 'SESSION_COMPLETED' ? 'COMPLETED' : 'STOPPED' }
@@ -2384,6 +2513,45 @@ export class ChartStreamComponent {
   }
 
   /**
+   * Draws the entry, stop and target of every live paper position.
+   *
+   * Price lines rather than marks because a *level* is the whole point: a mark
+   * can say "a stop is set" but cannot say where, and where is the only thing
+   * worth drawing. They are torn down and rebuilt rather than diffed, like the
+   * S/R lines and for the same reason — at most a handful of lines, the rebuild
+   * is cheaper than the bookkeeping a correct diff would need.
+   *
+   * Only live positions contribute, so a chart does not accumulate the levels
+   * of every trade of the day; the exit arrow is the record of a closed one.
+   */
+  private drawPaperLines(): void {
+    const series = this.candles;
+    if (!series) return;
+
+    for (const line of this.paperLines) series.removePriceLine(line);
+    this.paperLines = [];
+
+    for (const spec of paperPriceLines(this.paperPositions())) {
+      this.paperLines.push(
+        series.createPriceLine({
+          price: spec.price,
+          color: spec.colour,
+          lineWidth: spec.width,
+          lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
+          lineVisible: true,
+          axisLabelVisible: true,
+          title: spec.title,
+          axisLabelColor: '',
+          axisLabelTextColor: '',
+        }),
+      );
+    }
+  }
+
+  /** The paper lines currently on the chart, so they can be removed again. */
+  private paperLines: IPriceLine[] = [];
+
+  /**
    * Draws the simulation's entry and exit arrows.
    *
    * A whole replacement set every time, like the levels: the run publishes its
@@ -2399,8 +2567,16 @@ export class ChartStreamComponent {
   /** The left edge {@link drawMarkers} last clipped at — see {@link withinSeries}. */
   private markersClippedAt: number | null = null;
 
+  /** The previous replay cursor, to tell a growing series from a rewound one. */
+  private lastCursor: number | null = null;
+
   private firstBarTime(): number | null {
     return (this.drawn[0]?.time as number | undefined) ?? null;
+  }
+
+  /** The newest bar on screen — the replay's right edge. */
+  private lastBarTime(): number | null {
+    return (this.drawn.at(-1)?.time as number | undefined) ?? null;
   }
 
   /**
@@ -2422,8 +2598,21 @@ export class ChartStreamComponent {
     // nearest one by the chart, which stacked ten days of engine history on the
     // first candle.
     return withinSeries(
-      mergeMarkers(markersFor(this.trades(), seconds), retests, engine, this.levelRejectionMarks()),
+      mergeMarkers(
+        markersFor(this.trades(), seconds),
+        // The paper book's own entries and exits. A fourth source rather than
+        // a merge with `trades`: the two describe different books, and a user
+        // running both must be able to tell which arrow was theirs.
+        paperMarkers(this.paperPositions(), seconds),
+        retests,
+        engine,
+        this.levelRejectionMarks(),
+      ),
       this.firstBarTime(),
+      // Only while replaying. On a normal chart the newest drawn bar is the
+      // newest bar there is, so a right edge would clip nothing and cost a
+      // comparison per mark per redraw.
+      this.playbackUntilMs() === null ? null : this.lastBarTime(),
     );
   }
 
@@ -2466,6 +2655,14 @@ export class ChartStreamComponent {
   private redraw(options: { refit?: boolean } = {}): void {
     if (!this.candles || !this.volume) return;
     this.drawn = this.buffer.resampled(this.displaySeconds());
+    // The replay cursor, applied to the resampled series rather than to the
+    // buffer, so switching timeframe mid-replay re-buckets what is on screen
+    // and stops at the same instant instead of at the same bar *count*.
+    const until = this.playbackUntilMs();
+    if (until !== null) {
+      const cutoff = Math.floor(until / 1000);
+      this.drawn = this.drawn.filter((bar) => (bar.time as number) <= cutoff);
+    }
     this.drawnByTime = new Map(this.drawn.map((bar) => [bar.time as number, bar]));
     // Marks are clipped to the first drawn bar, so a series whose left edge
     // moved — the backlog arriving after the marks, or a longer history — has
