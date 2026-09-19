@@ -15,6 +15,7 @@
  */
 
 import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core';
+import { istDateKey } from '../chart-stream/chart-time';
 import type { ChartCandleEvent } from '../chart-stream/chart-stream.models';
 import { PaperTradeEngine } from './paper-trade-engine';
 import type {
@@ -109,6 +110,21 @@ export class PaperTradeService {
   readonly simulating = signal(false);
   readonly progress = signal(0);
 
+  /**
+   * How far through the session the re-run has reached, as epoch ms — or
+   * `null` when nothing is replaying.
+   *
+   * The charts bind to this and draw only up to it, which is what rewinds them
+   * to the open and lets the day arrive one bar at a time. One cursor for every
+   * panel on purpose: a call and a put are the same session, and animating them
+   * on separate clocks would show two different moments side by side.
+   *
+   * Back to `null` when the run ends or is stopped, which restores each chart
+   * to the complete session it was showing before — nothing was discarded to
+   * produce the replay, so nothing has to be refetched to undo it.
+   */
+  readonly playbackAt = signal<number | null>(null);
+
   constructor() {
     this.engine.subscribe((snapshot) => this.state.set(snapshot));
     // A page teardown must not leave a timer feeding a detached engine.
@@ -172,9 +188,27 @@ export class PaperTradeService {
     // Only a finished feed is re-run. A live one is already delivering bars,
     // and replaying its history underneath would simulate the morning again
     // while the afternoon arrives.
-    if (over) this.startPlayback(key, recorded);
+    if (over) this.startPlayback();
 
     return result;
+  }
+
+  /**
+   * Ends a re-run early, at the user's word.
+   *
+   * Two things have to happen together. The charts go back to the full session
+   * — that is just clearing the cursor, because the replay never removed a bar
+   * from anything. And any position still open is closed, because stopping the
+   * clock means no further bar will ever move it, and a position left `ACTIVE`
+   * against a chart that has stopped advancing is the same silent lie as the
+   * original stuck-on-"waiting" bug.
+   */
+  stopSimulation(): void {
+    if (this.playback === null) return;
+    this.stopPlayback();
+    for (const position of this.positions()) {
+      if (position.status !== 'EXITED') this.engine.closeManually(position.id);
+    }
   }
 
   /**
@@ -187,42 +221,86 @@ export class PaperTradeService {
    * reopen or re-decide a finished trade — only the order just placed is still
    * live enough to act on them.
    */
-  private startPlayback(instrumentKey: string, recorded: readonly PaperMarketUpdate[]): void {
+  private startPlayback(): void {
     this.stopPlayback();
-    if (recorded.length === 0) return;
+
+    const { warmup, session } = this.split();
+    if (session.length === 0) return;
+
+    // History goes in at once, silently. A strategy with a 21-bar warm-up has
+    // to be warm *at the open* — replaying the previous two days at the same
+    // pace as the day being watched would spend most of the three minutes on
+    // bars nobody asked to see, and would still leave the strategy cold when
+    // the session it cares about started.
+    for (const update of warmup) this.engine.onUpdate(update);
 
     // Evenly spread, with a floor so a long session does not outrun the
     // browser's timer resolution — below ~16ms a setInterval simply misses
     // ticks and the run silently takes longer than it promised.
-    const step = Math.max(16, Math.round(PLAYBACK_MS / recorded.length));
+    const step = Math.max(16, Math.round(PLAYBACK_MS / session.length));
     // How many bars each tick must carry to still finish on time once the floor
     // above has capped the step.
-    const perTick = Math.max(1, Math.ceil(recorded.length / Math.max(1, PLAYBACK_MS / step)));
+    const perTick = Math.max(1, Math.ceil(session.length / Math.max(1, PLAYBACK_MS / step)));
     let index = 0;
 
     this.simulating.set(true);
     this.progress.set(0);
+    // Just before the first session bar: the charts show the history they had
+    // and none of the day, which is the rewound state the replay starts from.
+    this.playbackAt.set(session[0]!.timeMs - 1);
 
     this.playback = setInterval(() => {
-      for (let n = 0; n < perTick && index < recorded.length; n++) {
-        this.engine.onUpdate(recorded[index++]!);
+      for (let n = 0; n < perTick && index < session.length; n++) {
+        this.engine.onUpdate(session[index++]!);
       }
-      this.progress.set(index / recorded.length);
+      this.progress.set(index / session.length);
+      // The bar just consumed. The charts draw up to and including it.
+      this.playbackAt.set(session[Math.min(index, session.length) - 1]!.timeMs);
 
-      if (index >= recorded.length) {
+      if (index >= session.length) {
         this.stopPlayback();
         // The recording ended, so the day ended: square off anything the
         // strategy left open rather than leaving a position that looks live on
         // a chart with no more bars to move it.
-        this.engine.endSession(instrumentKey);
+        for (const key of this.bars.keys()) this.engine.endSession(key);
       }
     }, step);
+  }
+
+  /**
+   * Every recorded bar in time order, split at the start of the session day.
+   *
+   * "The session day" is the IST day of the newest bar recorded — by
+   * construction the day being replayed, however many prior days of context
+   * were streamed behind it. Splitting on the calendar rather than on a bar
+   * count is what makes "the chart replays from 09:15" true regardless of how
+   * much history the user asked for.
+   *
+   * Instruments are merged into one stream so a call and a put replay against
+   * one clock, and a position on each is simulated by the same pass.
+   */
+  private split(): { warmup: PaperMarketUpdate[]; session: PaperMarketUpdate[] } {
+    const all = [...this.bars.values()].flat().sort((a, b) => a.timeMs - b.timeMs);
+    const newest = all.at(-1);
+    if (!newest) return { warmup: [], session: [] };
+
+    const day = istDateKey(Math.floor(newest.timeMs / 1000));
+    const warmup: PaperMarketUpdate[] = [];
+    const session: PaperMarketUpdate[] = [];
+    for (const update of all) {
+      if (istDateKey(Math.floor(update.timeMs / 1000)) === day) session.push(update);
+      else warmup.push(update);
+    }
+    return { warmup, session };
   }
 
   private stopPlayback(): void {
     if (this.playback !== null) clearInterval(this.playback);
     this.playback = null;
     this.simulating.set(false);
+    // The charts go back to the whole session. Clearing the cursor is the
+    // entire undo — the buffer behind each chart was never touched.
+    this.playbackAt.set(null);
   }
 
   /**
@@ -274,6 +352,7 @@ export class PaperTradeService {
   /** Clears the book. Called when the page starts a different session. */
   reset(): void {
     this.stopPlayback();
+    this.playbackAt.set(null);
     this.engine.reset();
     this.prices.set(new Map());
     this.bars.clear();

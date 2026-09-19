@@ -506,10 +506,14 @@ interface ChartPanel {
       @if (paper.simulating()) {
         <section class="simulating">
           <div class="bar"><i [style.width.%]="paper.progress() * 100"></i></div>
-          <p>
-            Replaying the recorded session — {{ simulationPct() }}%. Entries, stops and exits
-            appear as they are reached.
-          </p>
+          <div class="say">
+            <p>
+              Replaying the session from the open — {{ simulationPct() }}%. The charts are drawing
+              the day one bar at a time, with the indicators, levels and patterns plotting as they
+              are reached.
+            </p>
+            <button type="button" class="ghost" (click)="stopSimulation()">Stop simulation</button>
+          </div>
         </section>
       }
 
@@ -530,6 +534,7 @@ interface ChartPanel {
               [label]="panel.label"
               [leg]="panel.leg"
               [displaySeconds]="displaySeconds()"
+              [playbackUntilMs]="paper.playbackAt()"
               (candle)="onCandle(panel, $event)"
               (sessionEnded)="onSessionEnded(keyFor(panel))"
             />
@@ -657,10 +662,33 @@ interface ChartPanel {
       transition: width 0.2s linear;
     }
 
+    .simulating .say {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
     .simulating p {
       margin: 0;
       font-size: 0.73rem;
       color: var(--text-muted);
+    }
+
+    .simulating .ghost {
+      padding: 0.3rem 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .simulating .ghost:hover {
+      color: var(--text);
+      border-color: var(--text-faint);
     }
 
     .controls {
@@ -1286,6 +1314,18 @@ export class ChartStreamPageComponent {
    * never moves. No filtering is needed here, and doing any would be the page
    * second-guessing a routing decision the engine already makes correctly.
    */
+  /**
+   * Ends the replay early and puts the charts back as they were.
+   *
+   * "As they were" is literal and costs nothing: the replay only ever narrowed
+   * what was drawn, so clearing the cursor redraws the full session from the
+   * buffer each panel still holds. No session is restarted and nothing is
+   * refetched.
+   */
+  protected stopSimulation(): void {
+    this.paper.stopSimulation();
+  }
+
   /** Whole percent, so the label does not flicker through decimals. */
   protected simulationPct(): number {
     return Math.round(this.paper.progress() * 100);

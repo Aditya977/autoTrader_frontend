@@ -1158,6 +1158,31 @@ export class ChartStreamComponent {
   readonly paperPositions = input<readonly PaperPosition[]>([]);
 
   /**
+   * Draw the session only as far as this instant — the replay cursor.
+   *
+   * `null` is the normal chart: draw everything the buffer holds.
+   *
+   * This is what makes a paper trade watchable. The bars are all here already
+   * (an instant replay delivered the whole day in under a second), so a
+   * simulation that merely animated its *own* numbers would be doing so over a
+   * chart that had already given away the ending — the stop it is about to hit
+   * is sitting on screen the whole time. Truncating the drawn series to the
+   * bar the simulation has reached rewinds the chart to 09:15 and lets the day
+   * arrive one bar at a time.
+   *
+   * Everything derived follows for free, because everything derived is
+   * computed from the drawn series rather than from the buffer: EMAs, VWAP,
+   * chart patterns, candlestick boxes and the previous-day lines all recompute
+   * against the truncated set, and the timestamped marks are clipped to it. So
+   * the overlays plot as the day unfolds instead of being complete from the
+   * first frame.
+   *
+   * Nothing is lost by truncating: the buffer is untouched, so clearing this
+   * back to `null` redraws the whole session exactly as it was.
+   */
+  readonly playbackUntilMs = input<number | null>(null);
+
+  /**
    * Every candle this panel receives, re-emitted for whoever is simulating on
    * it.
    *
@@ -1805,6 +1830,40 @@ export class ChartStreamComponent {
       untracked(() => {
         this.drawMarkers();
         this.drawPaperLines();
+      });
+    });
+
+    // The replay cursor. A full redraw per step rather than an append, because
+    // every overlay is derived from the drawn series and has to be re-derived
+    // against the shorter one — an appended bar would leave the EMAs, the
+    // patterns and the clipped marks describing a series that no longer
+    // matches what is on screen.
+    //
+    // `refit` keeps the whole replayed span in view as it grows, which is what
+    // the chart already does for bars arriving live, so a replay looks like the
+    // session it is imitating rather than like a chart being scrolled.
+    effect(() => {
+      const until = this.playbackUntilMs();
+      untracked(() => {
+        // A cursor that moved *backwards* is a different series, not a longer
+        // one: the replay restarting, or ending and restoring the full day. The
+        // live tracker holds state about bars that are no longer drawn, so it
+        // has to be reset and the scan forced. A cursor moving forwards is
+        // exactly the live-feed case — one more bar on the end — which the
+        // incremental scan inside `redraw` already handles, and forcing it per
+        // bar would run full pattern detection 375 times for one replay.
+        const rewound = until === null || this.lastCursor === null || until < this.lastCursor;
+        this.lastCursor = until;
+
+        if (rewound) this.tracker.reset();
+        this.redraw({ refit: true });
+        if (rewound) this.refreshPatterns({ force: true });
+
+        // Marks are clipped to the newest drawn bar while replaying, and
+        // `redraw` only republishes them when the *left* edge moves — which it
+        // never does here. Without this the day's entries, exits and engine
+        // marks would stay hidden for the whole replay.
+        this.drawMarkers();
       });
     });
 
@@ -2508,8 +2567,16 @@ export class ChartStreamComponent {
   /** The left edge {@link drawMarkers} last clipped at — see {@link withinSeries}. */
   private markersClippedAt: number | null = null;
 
+  /** The previous replay cursor, to tell a growing series from a rewound one. */
+  private lastCursor: number | null = null;
+
   private firstBarTime(): number | null {
     return (this.drawn[0]?.time as number | undefined) ?? null;
+  }
+
+  /** The newest bar on screen — the replay's right edge. */
+  private lastBarTime(): number | null {
+    return (this.drawn.at(-1)?.time as number | undefined) ?? null;
   }
 
   /**
@@ -2542,6 +2609,10 @@ export class ChartStreamComponent {
         this.levelRejectionMarks(),
       ),
       this.firstBarTime(),
+      // Only while replaying. On a normal chart the newest drawn bar is the
+      // newest bar there is, so a right edge would clip nothing and cost a
+      // comparison per mark per redraw.
+      this.playbackUntilMs() === null ? null : this.lastBarTime(),
     );
   }
 
@@ -2584,6 +2655,14 @@ export class ChartStreamComponent {
   private redraw(options: { refit?: boolean } = {}): void {
     if (!this.candles || !this.volume) return;
     this.drawn = this.buffer.resampled(this.displaySeconds());
+    // The replay cursor, applied to the resampled series rather than to the
+    // buffer, so switching timeframe mid-replay re-buckets what is on screen
+    // and stops at the same instant instead of at the same bar *count*.
+    const until = this.playbackUntilMs();
+    if (until !== null) {
+      const cutoff = Math.floor(until / 1000);
+      this.drawn = this.drawn.filter((bar) => (bar.time as number) <= cutoff);
+    }
     this.drawnByTime = new Map(this.drawn.map((bar) => [bar.time as number, bar]));
     // Marks are clipped to the first drawn bar, so a series whose left edge
     // moved — the backlog arriving after the marks, or a longer history — has

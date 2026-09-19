@@ -181,6 +181,93 @@ describe('PaperTradeService', () => {
     expect(second.entryPrice).toBe(100);
   }));
 
+  it('rewinds the charts to the open and advances them bar by bar', fakeAsync(() => {
+    streamWholeDay(paper, [100, 102, 108, 121, 140, 160]);
+    expect(paper.playbackAt()).toBeNull();
+
+    paper.place(order());
+
+    // Rewound: just before the first bar of the day, so the charts draw none
+    // of the session and whatever history sat behind it.
+    expect(paper.playbackAt()).toBe(OPEN_MS - 1);
+
+    tick(31_000);
+    const early = paper.playbackAt()!;
+    expect(early).toBeGreaterThanOrEqual(OPEN_MS);
+
+    tick(60_000);
+    expect(paper.playbackAt()!).toBeGreaterThan(early);
+
+    // Finished: the cursor clears, which is what puts the charts back to the
+    // whole session.
+    tick(200_000);
+    expect(paper.playbackAt()).toBeNull();
+  }));
+
+  it('never advances the cursor past the session', fakeAsync(() => {
+    const closes = [100, 102, 108, 121, 140, 160];
+    streamWholeDay(paper, closes);
+    paper.place(order());
+
+    const seen: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      tick(5_000);
+      const at = paper.playbackAt();
+      if (at !== null) seen.push(at);
+    }
+
+    const lastBar = OPEN_MS + (closes.length - 1) * 60_000;
+    expect(Math.max(...seen)).toBeLessThanOrEqual(lastBar);
+    // And it only ever moves forwards while running.
+    expect(seen).toEqual([...seen].sort((a, b) => a - b));
+  }));
+
+  it('restores the charts and closes the position when stopped early', fakeAsync(() => {
+    streamWholeDay(
+      paper,
+      Array.from({ length: 60 }, (_, i) => 100 + i * 0.2),
+    );
+    paper.place(order());
+
+    tick(60_000);
+    expect(paper.simulating()).toBe(true);
+    expect(paper.playbackAt()).not.toBeNull();
+
+    paper.stopSimulation();
+
+    // The chart goes back to the full session — the cursor is the entire undo.
+    expect(paper.playbackAt()).toBeNull();
+    expect(paper.simulating()).toBe(false);
+    // Nothing is left looking live on a chart that has stopped advancing.
+    expect(paper.positions().every((p) => p.status === 'EXITED')).toBe(true);
+
+    // And the timer really is gone.
+    tick(200_000);
+    expect(paper.playbackAt()).toBeNull();
+  }));
+
+  it('replays only the session day, and warms the strategy on the days behind it', fakeAsync(() => {
+    // Two days recorded. The strategy needs 21 bars, and the session day here
+    // is far shorter than that — so it can only trade if the previous day went
+    // in as warm-up rather than being replayed at the same pace.
+    const previous = Date.UTC(2026, 7, 13, 3, 45);
+    for (let i = 0; i < 40; i++) {
+      paper.onCandle({ ...candle(i, 100), timestamp: previous + i * 60_000 });
+    }
+    for (let i = 0; i < 10; i++) paper.onCandle(candle(i, 100));
+    paper.endSession(KEY);
+
+    paper.place(order({ strategyId: 'ema-crossover', investment: 200_000 }));
+
+    // The cursor starts at the session day's open, not at the previous day's.
+    expect(paper.playbackAt()).toBe(OPEN_MS - 1);
+
+    tick(200_000);
+    // Warm enough to have been asked for a signal at all, so it is no longer
+    // sitting in CREATED for want of history.
+    expect(paper.positions()[0]!.status).toBe('EXITED');
+  }));
+
   it('tracks the last price per instrument for the sizing form', () => {
     expect(paper.priceOf(KEY)).toBeNull();
     paper.onCandle(candle(0, 137.5));

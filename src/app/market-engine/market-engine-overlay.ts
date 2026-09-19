@@ -226,13 +226,24 @@ export function marksAtBar(
  *
  * With nothing drawn yet there is no edge to clip at, and the list is returned
  * untouched.
+ *
+ * `lastBarTime` closes the same trap at the other end, and it only opens once
+ * the chart is replaying a session: while the series is truncated to the bar
+ * the replay has reached, every later mark of the day is still known and would
+ * pin to the right edge — stacking the afternoon's transitions onto whichever
+ * candle is currently last, and showing the user marks for bars that have not
+ * happened yet in the replay they are watching.
  */
 export function withinSeries<T extends { time: UTCTimestamp }>(
   markers: readonly T[],
   firstBarTime: number | null,
+  lastBarTime: number | null = null,
 ): T[] {
-  if (firstBarTime === null) return [...markers];
-  return markers.filter((m) => (m.time as number) >= firstBarTime);
+  return markers.filter(
+    (m) =>
+      (firstBarTime === null || (m.time as number) >= firstBarTime) &&
+      (lastBarTime === null || (m.time as number) <= lastBarTime),
+  );
 }
 
 function gradeRank(grade: Grade | null): number {
