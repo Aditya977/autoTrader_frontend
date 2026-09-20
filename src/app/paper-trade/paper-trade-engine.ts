@@ -447,7 +447,16 @@ export class PaperTradeEngine {
 
     // ACTIVE from here: mark first, so an exit below settles against a position
     // whose MAE/MFE already include this update.
-    const marked = this.mark(position, update);
+    let marked = this.mark(position, update);
+
+    // A moving target is resolved before the levels are tested, so this bar is
+    // judged against this bar's level rather than the previous one's. No-op
+    // for a strategy that does not implement it, which is all of them unless
+    // their target is a line — see {@link PaperStrategy.retarget}.
+    if (strategy.retarget) {
+      const moved = strategy.retarget({ ...ctx, position: marked });
+      if (moved !== marked.target) marked = { ...marked, target: moved };
+    }
 
     const stop = this.stopHit(marked, update);
     if (stop !== null) {

@@ -192,6 +192,32 @@ export interface PaperStrategy {
    * fired, so a strategy never has to re-implement its own risk levels.
    */
   exit(ctx: PaperStrategyContext): PaperSignal | null;
+
+  /**
+   * A target that moves, recomputed before the levels are tested each bar.
+   *
+   * Optional, and absent for every strategy whose target is a price decided
+   * once at the fill — {@link plan} already covers those, and the engine skips
+   * this entirely when it is not implemented.
+   *
+   * It exists for a target that is a *line* rather than a number: "exit at the
+   * 14 EMA" names a level that is somewhere else on every bar. Handling that
+   * in {@link exit} instead would look equivalent and quietly lose two things.
+   * The exit would fill at the bar's close rather than at the level price, so
+   * a bar that ran well through the EMA would book the overshoot as profit
+   * that was never available; and it would be recorded as a strategy exit
+   * rather than a target, so the win came out of the analytics under the wrong
+   * heading. Returning the level here instead lets the engine's own
+   * stop-and-target logic fill it exactly as it fills a fixed one, intrabar
+   * touch included.
+   *
+   * Returning `null` means there is no target on this bar, which is not the
+   * same as never having one: a level that is currently the wrong side of
+   * price is simply not a target yet, and clearing it is safer than leaving a
+   * stale one behind to fire the moment it is crossed from the wrong
+   * direction.
+   */
+  retarget?(ctx: PaperStrategyContext): number | null;
 }
 
 /**
