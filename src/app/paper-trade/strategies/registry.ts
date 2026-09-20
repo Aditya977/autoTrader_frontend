@@ -13,18 +13,11 @@
  * is the one whose behaviour needs no explaining.
  */
 
-import { breakoutStrategy } from './breakout.strategy';
-import { emaCrossoverStrategy } from './ema-crossover.strategy';
 import { greenRetestHoldStrategy } from './green-retest-hold.strategy';
 import { manualStrategy } from './manual.strategy';
 import type { PaperStrategy } from './paper-strategy';
 
-export const PAPER_STRATEGIES: readonly PaperStrategy[] = [
-  manualStrategy,
-  greenRetestHoldStrategy,
-  emaCrossoverStrategy,
-  breakoutStrategy,
-];
+export const PAPER_STRATEGIES: readonly PaperStrategy[] = [manualStrategy, greenRetestHoldStrategy];
 
 /** The default the setup form opens on. */
 export const DEFAULT_PAPER_STRATEGY_ID = manualStrategy.id;

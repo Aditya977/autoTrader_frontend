@@ -49,6 +49,17 @@ function bar(minute: number, close: number, extra: Partial<PaperMarketUpdate> = 
   } satisfies PaperMarketUpdate;
 }
 
+/** A green retest on the bar `minute` minutes after the open. */
+function greenAt(minute: number) {
+  return {
+    atMs: OPEN_MS + minute * 60_000,
+    bullish: true,
+    quality: 0.8,
+    valid: true,
+    scenario: 'exact',
+  };
+}
+
 function only(engine: PaperTradeEngine): PaperPosition {
   const positions = engine.snapshot().positions;
   expect(positions.length).toBe(1);
@@ -147,25 +158,24 @@ describe('PaperTradeEngine exits', () => {
   });
 
   it('closes on the strategy signal when neither level was touched', () => {
+    // The green-retest hold sets no stop and no target, so its exit is the
+    // only thing that can end the trade — which is exactly the branch under
+    // test here.
     const engine = new PaperTradeEngine();
-    // Range breakout exits when price closes back inside the range.
-    engine.place(order({ strategyId: 'range-breakout', investment: 200_000 }));
+    engine.setRetests(KEY, [greenAt(1)]);
+    engine.place(order({ strategyId: 'green-retest-candles' }));
 
-    // A flat base, then a breakout, then a collapse back into it.
-    for (let i = 0; i < 16; i++) engine.onUpdate(bar(i, 100));
-    engine.onUpdate(bar(16, 130));
-    expect(only(engine).status).toBe('ACTIVE');
+    engine.replay([bar(0, 100), bar(1, 100)]);
+    expect(engine.snapshot().positions[0]!.status).toBe('ACTIVE');
 
-    for (let i = 17; i < 26; i++) engine.onUpdate(bar(i, 128));
-    // Back inside the range, but comfortably above the 95 stop the breakout
-    // set at the range low — otherwise this would assert the stop, not the
-    // strategy's own exit.
-    engine.onUpdate(bar(26, 110));
+    engine.replay([bar(2, 104), bar(3, 108), bar(4, 112)]);
 
-    const position = only(engine);
+    // Not `only`: this strategy is continuous, so a fresh order is standing
+    // behind the settled one by now.
+    const position = engine.snapshot().positions[0]!;
     expect(position.status).toBe('EXITED');
     expect(position.exitReason).toBe('STRATEGY_EXIT');
-    expect(position.exitNote).toBe('closed back inside the range');
+    expect(position.exitNote).toContain('held');
   });
 
   it('exits by hand at the last marked price, and cancels an order that never filled', () => {
@@ -180,8 +190,10 @@ describe('PaperTradeEngine exits', () => {
     expect(closed.exitPrice).toBe(118);
 
     // An unfilled order is cancelled, not "exited at a loss" — nothing was held.
+    // The green-retest strategy with no signal supplied never fills, which is
+    // the cheapest way to get an order stuck in CREATED.
     const second = new PaperTradeEngine();
-    second.place(order({ strategyId: 'ema-crossover' }));
+    second.place(order({ strategyId: 'green-retest-candles' }));
     const id = only(second).id;
     second.closeManually(id);
     expect(only(second).status).toBe('EXITED');
@@ -407,43 +419,49 @@ describe('PaperTradeEngine as a backtest driver', () => {
     const day = Array.from({ length: 16 }, (_, i) => bar(i, 100));
 
     engine.replay(day);
-    engine.place(order({ strategyId: 'range-breakout', investment: 200_000 }));
     engine.replay(day);
 
-    // Still exactly the flat base it was, so the breakout has not triggered.
-    expect(only(engine).status).toBe('CREATED');
-
-    engine.onUpdate(bar(16, 130));
-    expect(only(engine).status).toBe('ACTIVE');
+    // Sixteen bars happened, so the engine holds sixteen — not thirty-two.
+    expect(engine.barsOf(KEY).length).toBe(16);
+    expect(engine.barsOf(KEY).map((b) => b.timeMs)).toEqual(day.map((u) => u.timeMs));
   });
 
   it('replaces an out-of-order bar of the same instant rather than inserting it', () => {
     const engine = new PaperTradeEngine();
-    engine.place(order({ strategyId: 'range-breakout', investment: 200_000 }));
-
     for (let i = 0; i < 16; i++) engine.onUpdate(bar(i, 100));
+
     // An older bar arriving behind the newest — a backlog after a reconnect.
     // It is already in history, so it must replace, not lengthen.
-    engine.onUpdate(bar(4, 100));
-    engine.onUpdate(bar(4, 100));
+    engine.onUpdate(bar(4, 111));
+    engine.onUpdate(bar(4, 112));
 
-    engine.onUpdate(bar(16, 130));
-    expect(only(engine).status).toBe('ACTIVE');
+    expect(engine.barsOf(KEY).length).toBe(16);
+    // And the replacement is the value that arrived last, in its own slot.
+    expect(engine.barsOf(KEY)[4]!.close).toBe(112);
+  });
+
+  it('inserts a genuinely missing bar where it belongs', () => {
+    // The other half of the out-of-order path: a bar the engine has *not*
+    // seen still has to land in time order, or every window a strategy reads
+    // is scrambled.
+    const engine = new PaperTradeEngine();
+    engine.onUpdate(bar(0, 100));
+    engine.onUpdate(bar(3, 103));
+    engine.onUpdate(bar(1, 101));
+
+    expect(engine.barsOf(KEY).map((b) => b.close)).toEqual([100, 101, 103]);
   });
 
   it('ignores a duplicate bar from a reconnecting feed', () => {
     const engine = new PaperTradeEngine();
-    engine.place(order({ strategyId: 'range-breakout', investment: 200_000 }));
 
-    // The same bar twice must not lengthen the window the strategy measures.
+    // The same bar twice must not lengthen the window a strategy measures.
     for (let i = 0; i < 16; i++) {
       engine.onUpdate(bar(i, 100));
       engine.onUpdate(bar(i, 100));
     }
-    expect(only(engine).status).toBe('CREATED');
 
-    engine.onUpdate(bar(16, 130));
-    expect(only(engine).status).toBe('ACTIVE');
+    expect(engine.barsOf(KEY).length).toBe(16);
   });
 });
 
@@ -495,16 +513,17 @@ describe('PaperTradeEngine activity', () => {
   });
 });
 
-describe('PaperTradeEngine warm-up', () => {
-  it('holds an order in CREATED until the strategy has the bars it needs', () => {
+describe('PaperTradeEngine declining to enter', () => {
+  it('waits in CREATED, quietly, while the strategy has no signal', () => {
     const engine = new PaperTradeEngine();
-    engine.place(order({ strategyId: 'ema-crossover', investment: 200_000 }));
+    // No retests supplied, so the strategy declines every bar.
+    engine.place(order({ strategyId: 'green-retest-candles' }));
 
-    // 21 warm-up bars. A rising series crosses long before then, and the order
-    // must still not fill.
     for (let i = 0; i < 10; i++) engine.onUpdate(bar(i, 100 + i));
+
     expect(only(engine).status).toBe('CREATED');
-    // And no activity line per declined bar.
+    // One line for the order itself and nothing else: an activity feed with a
+    // row per declined bar would bury the entry it is waiting for.
     expect(engine.snapshot().events.length).toBe(1);
   });
 });

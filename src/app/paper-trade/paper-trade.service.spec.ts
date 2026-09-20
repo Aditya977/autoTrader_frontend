@@ -246,10 +246,10 @@ describe('PaperTradeService', () => {
     expect(paper.playbackAt()).toBeNull();
   }));
 
-  it('replays only the session day, and warms the strategy on the days behind it', fakeAsync(() => {
-    // Two days recorded. The strategy needs 21 bars, and the session day here
-    // is far shorter than that — so it can only trade if the previous day went
-    // in as warm-up rather than being replayed at the same pace.
+  it('replays only the session day, with the days behind it already in place', fakeAsync(() => {
+    // Two days recorded. Only the newer one is paced: the previous day is
+    // context, and spending the three minutes replaying bars nobody asked to
+    // watch would leave almost none for the day being studied.
     const previous = Date.UTC(2026, 7, 13, 3, 45);
     for (let i = 0; i < 40; i++) {
       paper.onCandle({ ...candle(i, 100), timestamp: previous + i * 60_000 });
@@ -257,14 +257,15 @@ describe('PaperTradeService', () => {
     for (let i = 0; i < 10; i++) paper.onCandle(candle(i, 100));
     paper.endSession(KEY);
 
-    paper.place(order({ strategyId: 'ema-crossover', investment: 200_000 }));
+    paper.place(order());
 
-    // The cursor starts at the session day's open, not at the previous day's.
+    // The cursor starts at the session day's open, not at the previous day's —
+    // which is the whole proof that the previous day was not put in the paced
+    // set.
     expect(paper.playbackAt()).toBe(OPEN_MS - 1);
 
     tick(200_000);
-    // Warm enough to have been asked for a signal at all, so it is no longer
-    // sitting in CREATED for want of history.
+    expect(paper.playbackAt()).toBeNull();
     expect(paper.positions()[0]!.status).toBe('EXITED');
   }));
 

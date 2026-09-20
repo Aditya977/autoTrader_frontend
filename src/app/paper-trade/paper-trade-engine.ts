@@ -411,6 +411,19 @@ export class PaperTradeEngine {
     return this.retests.has(instrumentKey);
   }
 
+  /**
+   * The closed bars the engine holds for an instrument, oldest first.
+   *
+   * The series every strategy decision was actually made against, which is
+   * what makes it worth exposing: when a strategy's window looks wrong, the
+   * first question is whether the bars underneath it are, and there is
+   * otherwise no way to ask. A backtest harness reading the engine's own view
+   * of history wants the same thing.
+   */
+  barsOf(instrumentKey: string): readonly PaperBar[] {
+    return this.history.get(instrumentKey) ?? EMPTY_BARS;
+  }
+
   /* ---------------------------------------------------------------------
    * Internals
    * ------------------------------------------------------------------ */
