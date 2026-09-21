@@ -10,14 +10,18 @@ export const routes: Routes = [
     loadComponent: () => import('./auth/login-page.component').then((m) => m.LoginPageComponent),
   },
   {
-    path: 'backtest',
+    path: 'dashboard',
     // Same guard as the chart: every endpoint this route calls sits behind an
     // Upstox session, so an unauthenticated visit would render a page whose
     // every request 401s.
     canActivate: [authGuard],
     loadComponent: () =>
-      import('./backtest/backtest-page.component').then((m) => m.BacktestPageComponent),
+      import('./trading/trading-dashboard-page.component').then(
+        (m) => m.TradingDashboardPageComponent,
+      ),
   },
+  // The page this replaced. Kept as a redirect so an old bookmark still lands.
+  { path: 'backtest', pathMatch: 'full', redirectTo: 'dashboard' },
   {
     path: 'day-shapes',
     // Static, compiled-in taxonomies — but the endpoint sits behind the same

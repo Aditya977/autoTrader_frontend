@@ -555,10 +555,32 @@ export class PaperTradeEngine {
     // otherwise is the single most flattering lie a paper trader can tell.
     const entryPrice = update.price;
     const at = update.timeMs + this.offsetOf(strategy);
+
+    // A budget order is re-sized to the most whole lots the budget buys **at
+    // the fill price**. For a signal strategy the order may have been sized an
+    // hour ago at a very different premium; filling the stale lot count would
+    // commit more — or less — than the amount the user typed. A lot-count order
+    // keeps its lots: that number was the user's decision.
+    const request = this.requestByTrade.get(position.id);
+    let sized = position;
+    if ((request?.sizing ?? 'AMOUNT') === 'AMOUNT') {
+      const plan = planSize(position.contract, entryPrice, request?.investment ?? position.investment);
+      if (!plan.valid) {
+        this.positions.set(position.id, { ...position, currentPrice: update.price });
+        this.record('ENTRY_REJECTED', position, {
+          at,
+          price: entryPrice,
+          message: `Signal on ${position.contract.tradingsymbol} skipped — ${plan.message}`,
+        });
+        return false;
+      }
+      sized = { ...position, lots: plan.lots, quantity: plan.quantity };
+    }
+
     const planned = strategy.plan({ ...ctx, position: null }, entryPrice);
 
     const filled: PaperPosition = {
-      ...position,
+      ...sized,
       status: 'ACTIVE',
       entryPrice,
       entryTime: at,
@@ -566,7 +588,7 @@ export class PaperTradeEngine {
       // The user's own level wins where they set one; the strategy fills the rest.
       stopLoss: position.stopLoss ?? planned.stopLoss,
       target: position.target ?? planned.target,
-      capitalUsed: entryPrice * position.quantity,
+      capitalUsed: entryPrice * sized.quantity,
       currentPrice: entryPrice,
       lastMarkedAt: at,
       marksHeld: 0,
@@ -739,6 +761,7 @@ export class PaperTradeEngine {
       retests: strategy.needsRetests
         ? (this.retests.get(update.instrumentKey) ?? EMPTY_RETESTS)
         : EMPTY_RETESTS,
+      contract: { lotSize: position.contract.lotSize, tickSize: position.contract.tickSize },
     };
   }
 

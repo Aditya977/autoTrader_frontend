@@ -58,6 +58,7 @@
  * arithmetic on bar times rather than on the wall clock.
  */
 
+import { stopBelowLow } from '../sizing';
 import type { PaperPlan, PaperSignal, PaperStrategy, PaperStrategyContext } from './paper-strategy';
 
 /** One-minute bars: the timeframe the whole rule is written in. */
@@ -75,6 +76,12 @@ const FILL_OFFSET_MS = BAR_MS - 2_000;
  */
 export const HOLD_BARS = 2;
 
+/** Ticks under the signal candle's low the stop rests at — 1 is "immediately below". */
+export const STOP_BUFFER_TICKS = 1;
+
+/** NSE's option tick, for a contract that somehow arrives without one. */
+const DEFAULT_TICK = 0.05;
+
 export const greenRetestHoldStrategy: PaperStrategy = {
   // Stable across a change of holding period — see the note above.
   id: 'green-retest-candles',
@@ -82,7 +89,8 @@ export const greenRetestHoldStrategy: PaperStrategy = {
   description:
     'Buys when the retest overlay prints a green (bullish) retest on a 1-minute candle, ' +
     `entering 2 seconds before that candle closes, and sells 2 seconds before the ` +
-    `${ordinal(HOLD_BARS)} candle after it closes. Long only, one trade at a time.`,
+    `${ordinal(HOLD_BARS)} candle after it closes — or at a stop one tick below the ` +
+    `signal candle's low, if that is hit first. Long only, one trade at a time.`,
 
   // It reads the overlay's signals rather than the bars, so it is ready on the
   // first candle it is given one for.
@@ -100,16 +108,22 @@ export const greenRetestHoldStrategy: PaperStrategy = {
   params: {},
 
   /**
-   * No stop and no target: the exit is the clock.
+   * A stop immediately below the signal candle, and no target.
    *
-   * Returning levels here would create a second way out, and a trade that
-   * stopped at 11:16 would not be this strategy's trade — the rule is three
-   * candles, whatever they do. The risk is bounded by the holding period
-   * instead of by a price, which is the bargain a fixed-duration strategy
-   * makes.
+   * The plan is made at the fill, and the fill is on the signal candle's
+   * close — so `ctx.update` *is* the signal candle. The stop rests one tick
+   * under its low, snapped onto the contract's tick grid: a retest whose own
+   * candle's low gives way is a level that did not hold, and the two-candle
+   * hold was never a promise to sit through that. The clock is still the
+   * normal way out; the stop is the way out when the retest fails.
+   *
+   * The same rule as the backend's 2-Candle Retest, which uses the same
+   * `stopBelowLow` arithmetic.
    */
-  plan(): PaperPlan {
-    return { stopLoss: null, target: null };
+  plan(ctx: PaperStrategyContext, entryPrice: number): PaperPlan {
+    const low = ctx.update.low ?? entryPrice;
+    const tick = ctx.contract?.tickSize ?? DEFAULT_TICK;
+    return { stopLoss: stopBelowLow(low, tick, STOP_BUFFER_TICKS), target: null };
   },
 
   /**

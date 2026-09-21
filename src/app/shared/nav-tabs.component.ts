@@ -17,7 +17,7 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
   template: `
     <nav class="tabs" aria-label="Sections">
       <a routerLink="/chart" routerLinkActive="on" class="tab">Chart</a>
-      <a routerLink="/backtest" routerLinkActive="on" class="tab">Backtest</a>
+      <a routerLink="/dashboard" routerLinkActive="on" class="tab">Trading Dashboard</a>
       <a routerLink="/day-shapes" routerLinkActive="on" class="tab">Day shapes</a>
     </nav>
   `,
