@@ -8,7 +8,7 @@
  *   close > 21EMA╱        ╲                    ╱
  *   ┄┄┄┄┄┄┄┄┄┄┄╱┄┄┄┄┄┄┄┄┄┄┄╲┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄╱┄┄┄ 21 EMA
  *             │             ╲______________╱
- *   SL = breakout candle's open
+ *   SL = just under the ENTRY candle's open
  * ```
  *
  * ## The rule this file refuses to implement
@@ -71,7 +71,16 @@ export interface EmaRetestSetup {
   pullbackIndex: number;
   /** Deepest price of the pullback. */
   pullbackLow: number;
-  /** Open of the breakout candle — the stop. */
+  /**
+   * Just under the **entry** candle's open — the stop.
+   *
+   * Not the breakout candle's open, which is where this started. On a
+   * one-minute option the breakout can be several rupees below the reclaim
+   * that finally triggers the entry, and a stop down there turns one red
+   * candle into a loss several times the size of the move being played for.
+   * The entry candle's open is the level that says the reclaim itself has
+   * failed, and it is the one a discretionary trader would actually use.
+   */
   stopLoss: number;
   /**
    * The 14 EMA at the reclaim bar, wherever it happens to be.
@@ -90,7 +99,7 @@ export const emaRetestReclaimStrategy: PaperStrategy = {
   name: '21 EMA Retest Reclaim',
   description:
     'Buys when price breaks above the 21 EMA, pulls back toward it, and then reclaims the high ' +
-    'of the last bullish candle before that pullback — an N-shape. Stop at the breakout ' +
+    'of the last bullish candle before that pullback — an N-shape. Stop just under the entry ' +
     'candle’s open, target the 14 EMA. No exact EMA touch is required.',
 
   // The 21 EMA needs 21 bars, and deciding that a candle *broke through* needs
@@ -110,6 +119,17 @@ export const emaRetestReclaimStrategy: PaperStrategy = {
       step: 1,
     },
     {
+      key: 'stopBuffer',
+      description:
+        'How far under the entry candle\'s open the stop sits, as a percentage of it. "Just ' +
+        'below" rather than exactly on it, so a wick that merely returns to the open does not ' +
+        'close the trade. Zero puts it exactly on the open.',
+      label: 'Stop buffer %',
+      min: 0,
+      max: 2,
+      step: 0.05,
+    },
+    {
       key: 'pullbackReach',
       label: 'Pullback reach',
       description:
@@ -122,10 +142,10 @@ export const emaRetestReclaimStrategy: PaperStrategy = {
     },
   ],
 
-  params: { window: 4, pullbackReach: 1 },
+  params: { window: 4, pullbackReach: 1, stopBuffer: 0.1 },
 
   /**
-   * The stop is the breakout candle's open, and nothing moves it.
+   * The stop is just under the entry candle's open, and nothing moves it.
    *
    * Re-derived rather than remembered, because a strategy holds no state
    * between bars — that is what lets a replay of the same bars produce the
@@ -246,6 +266,7 @@ export function findSetup(ctx: PaperStrategyContext): EmaRetestSetup | null {
 
   const window = Math.round(ctx.params['window'] ?? 4);
   const reach = ctx.params['pullbackReach'] ?? 1;
+  const buffer = ctx.params['stopBuffer'] ?? 0.1;
 
   const context = emaSeries(bars, CONTEXT_EMA);
   const now = bars[n]!;
@@ -253,7 +274,7 @@ export function findSetup(ctx: PaperStrategyContext): EmaRetestSetup | null {
   // The most recent breakout first: if two are in range, the setup belongs to
   // the one price is actually reacting to.
   for (let b = n - 1; b >= n - window && b >= 1; b--) {
-    const setup = evaluate(bars, context, b, n, reach);
+    const setup = evaluate(bars, context, b, n, reach, buffer);
     if (setup) {
       // Where the 14 EMA sits is recorded but not judged here: it decides how
       // the trade *ends*, not whether the structure happened, and conflating
@@ -273,6 +294,7 @@ function evaluate(
   b: number,
   n: number,
   reach: number,
+  buffer: number,
 ): Omit<EmaRetestSetup, 'ema14' | 'entryPrice'> | null {
   const emaAtBreak = context[b];
   const emaBefore = context[b - 1];
@@ -339,18 +361,25 @@ function evaluate(
   const range = Math.max(breakout.high - breakout.low, 0);
   if (!(pullbackLow <= emaNow + reach * range)) return null;
 
-  // 6. The stop has to be a stop: below the fill, and never touched on the way
-  //    here. A setup whose stop already traded is one the trade would have
-  //    been carried out of before this bar arrived.
-  const stopLoss = breakout.open;
-  if (!(stopLoss < now.close)) return null;
-  // From the bar *after* the breakout. The breakout candle's own low is below
-  // its open on almost every bullish break — that dip is how the candle got
-  // going, not the setup failing — and counting it would reject essentially
-  // every valid setup there is.
-  for (let i = b + 1; i <= n; i++) {
-    if (bars[i]!.low <= stopLoss) return null;
+  // 6. Structural invalidation, which is a different question from where the
+  //    stop goes. If price traded back under the breakout candle's open at any
+  //    point while the setup was forming, the break failed and whatever
+  //    happens afterwards belongs to a later breakout, not this one.
+  //
+  //    Measured up to the bar *before* the entry, and from the bar after the
+  //    breakout. Both ends matter: the breakout candle's own low is under its
+  //    open on almost every bullish break, and the entry candle's low is under
+  //    its own open just as often — counting either would reject nearly every
+  //    real setup. This is the same trap the stop rule below had to avoid.
+  for (let i = b + 1; i < n; i++) {
+    if (bars[i]!.low <= breakout.open) return null;
   }
+
+  // 7. The stop: just under the entry candle's open.
+  const stopLoss = now.open * (1 - Math.max(0, buffer) / 100);
+  // A reclaim that closed below its own open is a red candle. Its open is
+  // above the fill, so there is no stop to be had under it and no trade.
+  if (!(stopLoss < now.close)) return null;
 
   return { breakoutIndex: b, focusIndex, focusPrice, pullbackIndex, pullbackLow, stopLoss };
 }

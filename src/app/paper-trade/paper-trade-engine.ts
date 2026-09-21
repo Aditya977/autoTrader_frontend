@@ -412,6 +412,30 @@ export class PaperTradeEngine {
   }
 
   /**
+   * Forgets the bar history, so a re-run rebuilds it as it goes.
+   *
+   * The fix for a look-ahead that is invisible until a strategy reads history.
+   * A recorded session is replayed by feeding its bars back through the
+   * engine, but by then the engine already holds every bar of that session
+   * from the live pass — and {@link appendBar} *replaces* a bar of the same
+   * instant rather than truncating what comes after it. So on the first
+   * replayed bar the history is still 375 bars long, and a strategy asking
+   * "what has happened so far" is handed the whole day including its end.
+   *
+   * It costs nothing for a strategy that only reads the update it was given,
+   * which is why this went unnoticed: the first strategy to read `ctx.bars`
+   * was the first one to see the future, and it simply took no trades rather
+   * than taking wrong ones.
+   *
+   * Positions, events and supplied retests are untouched — this is about what
+   * the engine believes it has *seen*, not about what it has done.
+   */
+  rewindHistory(instrumentKey?: string): void {
+    if (instrumentKey === undefined) this.history.clear();
+    else this.history.delete(instrumentKey);
+  }
+
+  /**
    * The closed bars the engine holds for an instrument, oldest first.
    *
    * The series every strategy decision was actually made against, which is
