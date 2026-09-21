@@ -261,6 +261,26 @@ export function pnlPct(netPnl: number, capitalUsed: number): number {
   return (netPnl / capitalUsed) * 100;
 }
 
+/**
+ * A long's stop immediately below a candle's low, on a valid tick.
+ *
+ * The same rule as the backend's `stopBelowLow`: the low is floored onto the
+ * tick grid first (an off-grid low rounds *away* from price, never into the
+ * candle), then `bufferTicks` ticks are taken off. Counted in whole ticks so
+ * float noise cannot knock a price that was already on the grid down a tick —
+ * `101.05 / 0.05` is `2020.9999999999998`.
+ */
+export function stopBelowLow(low: number, tickSize: number, bufferTicks = 1): number {
+  if (!Number.isFinite(low)) return low;
+  const tick = tickSize > 0 && Number.isFinite(tickSize) ? tickSize : 0;
+  if (tick === 0) return low;
+  const decimals = (tick.toString().split('.')[1] ?? '').length;
+  const raw = low / tick;
+  const ticks = Math.abs(raw - Math.round(raw)) < 1e-6 ? Math.round(raw) : Math.floor(raw);
+  const stopTicks = ticks - Math.max(0, Math.trunc(bufferTicks));
+  return Number((stopTicks * tick).toFixed(decimals));
+}
+
 function round(value: number): string {
   return Math.round(value).toLocaleString('en-IN');
 }

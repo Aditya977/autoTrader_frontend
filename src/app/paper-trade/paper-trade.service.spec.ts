@@ -49,6 +49,28 @@ function candle(minute: number, close: number): ChartCandleEvent {
   };
 }
 
+/** A candle with real OHLC, for a shape the bar-reading strategy can judge. */
+function ohlc(minute: number, o: number, h: number, l: number, c: number): ChartCandleEvent {
+  return { ...candle(minute, c), open: o, high: h, low: l, close: c };
+}
+
+/**
+ * A session containing one textbook 21-EMA reclaim.
+ *
+ * 30 flat bars pin the 21 EMA at 100, then: a breakout closing 103, a push to
+ * a 105.5 high, a pullback to 101, and a close at 106 above that high.
+ */
+function sessionWithReclaim(): ChartCandleEvent[] {
+  const bars: ChartCandleEvent[] = [];
+  for (let i = 0; i < 30; i++) bars.push(ohlc(i, 100, 100.2, 99.8, 100));
+  bars.push(ohlc(30, 99.5, 103.2, 99.4, 103));
+  bars.push(ohlc(31, 103, 105.5, 102.8, 105));
+  bars.push(ohlc(32, 105, 105.1, 101.0, 102));
+  bars.push(ohlc(33, 102, 106.5, 101.9, 106));
+  for (let i = 34; i < 40; i++) bars.push(ohlc(i, 106, 106.5, 105.5, 106));
+  return bars;
+}
+
 /** The whole of an instant replay: every bar, then the session ends. */
 function streamWholeDay(paper: PaperTradeService, closes: number[]): void {
   closes.forEach((close, i) => paper.onCandle(candle(i, close)));
@@ -267,6 +289,70 @@ describe('PaperTradeService', () => {
     tick(200_000);
     expect(paper.playbackAt()).toBeNull();
     expect(paper.positions()[0]!.status).toBe('EXITED');
+  }));
+
+  it('rewinds the bar history so a re-run cannot see the end of the day', fakeAsync(() => {
+    // The bug this exists for. The engine has already seen the whole session
+    // live by the time a trade is placed, and replaying it on top of that
+    // history handed any strategy reading `ctx.bars` all 375 bars on the
+    // first bar of the re-run — so it evaluated the close of the day, every
+    // tick, and took nothing all session.
+    const closes = Array.from({ length: 40 }, (_, i) => 100 + i);
+    streamWholeDay(paper, closes);
+
+    // Live pass complete: the engine has the lot.
+    expect(paper.barsSeen(KEY)).toBe(40);
+
+    paper.place(order());
+
+    // The moment the re-run starts, history is back to nothing and rebuilds
+    // as the replay advances.
+    expect(paper.barsSeen(KEY)).toBeLessThan(40);
+
+    tick(45_000);
+    const midway = paper.barsSeen(KEY);
+    expect(midway).toBeGreaterThan(0);
+    expect(midway).toBeLessThan(40);
+
+    tick(200_000);
+    expect(paper.barsSeen(KEY)).toBe(40);
+  }));
+
+  it('never shows a strategy a bar from after the one being replayed', fakeAsync(() => {
+    const closes = Array.from({ length: 30 }, (_, i) => 100 + i);
+    streamWholeDay(paper, closes);
+    paper.place(order());
+
+    // At every point of the re-run, the newest bar the engine holds must be
+    // the bar the cursor has reached — never one from later in the day.
+    for (let i = 0; i < 40; i++) {
+      tick(5_000);
+      const at = paper.playbackAt();
+      const newest = paper.newestBarTime(KEY);
+      if (at === null || newest === null) continue;
+      expect(newest).toBeLessThanOrEqual(at);
+    }
+  }));
+
+  it('lets a history-reading strategy trade a session it already streamed', fakeAsync(() => {
+    // The end-to-end shape of the reported bug: the whole day streams first
+    // (an instant replay finishes before anyone can press the button), then a
+    // 21-EMA order is placed against it. With the engine's history left full,
+    // the strategy evaluated the *last* bar of the day on every tick of the
+    // re-run and took nothing all session.
+    for (const bar of sessionWithReclaim()) paper.onCandle(bar);
+    paper.endSession(KEY);
+
+    const placed = paper.place(order({ strategyId: 'ema-retest-reclaim' }));
+    expect('position' in placed).toBe(true);
+
+    tick(200_000);
+
+    const position = paper.positions()[0]!;
+    expect(position.status).not.toBe('CREATED');
+    expect(position.entryPrice).toBe(106);
+    // Just under the entry candle's open of 102, not the breakout candle's.
+    expect(position.stopLoss!).toBeCloseTo(102 * 0.999, 6);
   }));
 
   it('tracks the last price per instrument for the sizing form', () => {

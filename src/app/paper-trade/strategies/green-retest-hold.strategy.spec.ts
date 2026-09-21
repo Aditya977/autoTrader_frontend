@@ -319,26 +319,44 @@ describe('Green Retest 3-Candle Buy — what it records', () => {
     expect(kinds.filter((k) => k === 'STRATEGY_EXIT').length).toBe(2);
   });
 
-  it('sets no stop and no target — the clock is the exit', () => {
+  it('stops one tick below the signal candle’s low, and sets no target', () => {
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(1)]);
     engine.place(order());
-    engine.replay(session(10));
+    // The signal candle at 11:01 trades down to 98.53 and closes at 100.
+    const signalCandle: PaperMarketUpdate = { ...bar(1, 100), low: 98.53 };
+    engine.replay([bar(0, 100), signalCandle, ...session(10).slice(2)]);
 
     const trade = settled(engine)[0]!;
-    expect(trade.stopLoss).toBeNull();
+    // 98.53 floors to 98.50 on the 0.05 grid, then one tick under: 98.45.
+    expect(trade.stopLoss).toBe(98.45);
     expect(trade.target).toBeNull();
   });
 
-  it('holds the full period through a sharp drawdown', () => {
-    // No stop means no early exit. The rule is the holding period, whatever
-    // the candles inside it do.
+  it('leaves at the stop when a held candle breaks the signal candle’s low', () => {
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(1)]);
     engine.place(order());
-    engine.replay([bar(0, 100), bar(1, 100), bar(2, 40), bar(3, 30), bar(4, 90), bar(5, 95)]);
+    // The first held candle opens at 100 and trades down through the 99.95
+    // stop before recovering to 99.98 — a resting stop fills at its price.
+    const breaks: PaperMarketUpdate = { ...bar(2, 99.98), open: 100, high: 100.1, low: 99.5 };
+    engine.replay([bar(0, 100), bar(1, 100), breaks, bar(3, 101), bar(4, 102), bar(5, 103)]);
 
     const trade = settled(engine)[0]!;
+    expect(trade.exitReason).toBe('STOP_LOSS');
+    expect(trade.exitPrice).toBe(99.95);
+    // Out on the first held candle, well before the clock would have said so.
+    expect(trade.exitTime!).toBeLessThan(at(1 + HOLD_BARS) + 58_000);
+  });
+
+  it('still holds the full period when the stop is never touched', () => {
+    const engine = new PaperTradeEngine();
+    engine.setRetests(KEY, [signal(1)]);
+    engine.place(order());
+    engine.replay([bar(0, 100), bar(1, 100), bar(2, 101), bar(3, 102), bar(4, 103)]);
+
+    const trade = settled(engine)[0]!;
+    expect(trade.exitReason).toBe('STRATEGY_EXIT');
     expect(trade.exitTime).toBe(at(1 + HOLD_BARS) + 58_000);
   });
 });

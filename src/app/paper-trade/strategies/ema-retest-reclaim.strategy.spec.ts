@@ -116,9 +116,36 @@ describe('21 EMA Retest Reclaim — the valid setup', () => {
     expect(setup.pullbackLow).toBe(101.0);
   });
 
-  it('stops at the breakout candle’s open, not at the pullback low', () => {
+  it('stops just under the entry candle’s open, not the breakout candle’s', () => {
+    // The breakout candle opened at 99.5 and the entry candle at 102. A stop
+    // down at 99.5 turns one red candle into a loss several times the size of
+    // the move being played for; the entry candle's open is the level that
+    // says the reclaim itself has failed.
     const setup = findSetup(ctxOf(textbook()))!;
-    expect(setup.stopLoss).toBe(99.5);
+
+    expect(setup.stopLoss).toBeCloseTo(102 * 0.999, 6);
+    expect(setup.stopLoss).toBeLessThan(102);
+    expect(setup.stopLoss).toBeGreaterThan(99.5);
+  });
+
+  it('puts the stop exactly on the open when the buffer is zero', () => {
+    const setup = findSetup(ctxOf(textbook(), { stopBuffer: 0 }))!;
+    expect(setup.stopLoss).toBe(102);
+  });
+
+  it('widens the stop with the buffer', () => {
+    const setup = findSetup(ctxOf(textbook(), { stopBuffer: 1 }))!;
+    expect(setup.stopLoss).toBeCloseTo(102 * 0.99, 6);
+  });
+
+  it('is not defeated by the entry candle’s own low', () => {
+    // The trap in this rule, and the same one the breakout-candle version
+    // had: the entry candle's low is under its own open on nearly every
+    // bullish reclaim. A structure check that counted it would reject every
+    // setup there is.
+    const bars = textbook();
+    expect(bars[33]!.low).toBeLessThan(bars[33]!.open);
+    expect(findSetup(ctxOf(bars))).not.toBeNull();
   });
 
   it('enters at the close of the reclaim candle', () => {
@@ -133,7 +160,8 @@ describe('21 EMA Retest Reclaim — the valid setup', () => {
     expect(setup.breakoutIndex).toBe(38);
     expect(setup.focusIndex).toBe(39);
     expect(setup.focusPrice).toBe(108.7);
-    expect(setup.stopLoss).toBe(104.2);
+    // Entry candle 41 opened at 107.8.
+    expect(setup.stopLoss).toBeCloseTo(107.8 * 0.999, 6);
     expect(setup.entryPrice).toBe(109.2);
   });
 
@@ -295,9 +323,9 @@ describe('21 EMA Retest Reclaim — what it refuses', () => {
     expect(findSetup(ctxOf(bars))).toBeNull();
   });
 
-  it('refuses when the stop already traded', () => {
-    // The pullback went through the breakout candle's open. A trade taken
-    // here would have been carried out before this bar printed.
+  it('refuses when the breakout was structurally undone', () => {
+    // The pullback traded back under the breakout candle's open, so the break
+    // failed. Whatever happens next belongs to a later breakout, not this one.
     const bars = [
       ...base(),
       candle(30, 99.5, 103.2, 99.4, 103),
@@ -415,7 +443,7 @@ describe('21 EMA Retest Reclaim — through the engine', () => {
     const position = engine.snapshot().positions[0]!;
     expect(position.status).toBe('ACTIVE');
     expect(position.entryPrice).toBe(106);
-    expect(position.stopLoss).toBe(99.5);
+    expect(position.stopLoss).toBeCloseTo(102 * 0.999, 6);
   });
 
   it('waits for the 21 EMA to warm before it can act', () => {
@@ -429,17 +457,24 @@ describe('21 EMA Retest Reclaim — through the engine', () => {
     expect(engine.snapshot().events.length).toBe(1);
   });
 
-  it('stops out at the breakout candle’s open and books the loss', () => {
+  it('stops out just under the entry candle’s open, and loses less for it', () => {
     const engine = new PaperTradeEngine();
     engine.place(order());
     engine.replay([...textbook(), candle(34, 106, 106.1, 98.0, 99)].map(feed));
 
+    const stop = 102 * 0.999;
     const position = engine.snapshot().positions[0]!;
     expect(position.status).toBe('EXITED');
     expect(position.exitReason).toBe('STOP_LOSS');
     // Filled at the stop, not at the close that ran past it.
-    expect(position.exitPrice).toBe(99.5);
-    expect(position.realisedPnl).toBeLessThan(0);
+    expect(position.exitPrice).toBeCloseTo(stop, 6);
+    // And the damage is the entry-candle distance, not the breakout-candle
+    // one — which is the whole point of moving it. Sized off the position's
+    // own quantity, because the engine re-sizes the order against the live
+    // price rather than taking the request's lot count on trust.
+    const qty = position.quantity;
+    expect(position.grossPnl).toBeCloseTo((stop - 106) * qty, 6);
+    expect(Math.abs(position.grossPnl)).toBeLessThan(Math.abs((99.5 - 106) * qty));
   });
 
   it('books a TARGET when price reaches the 14 EMA from below', () => {
@@ -461,10 +496,23 @@ describe('21 EMA Retest Reclaim — through the engine', () => {
   it('exits on the 14 EMA reached from above when it was never overhead', () => {
     // The other geometry: price is extended above the average, so the same
     // line is what it falls back to. Still "touched the 14 EMA".
+    //
+    // The entry candle opens at 101 rather than 102, which puts the stop at
+    // ~100.9 — *below* the 14 EMA at ~101.8. Without that the tighter stop
+    // sits above the average and always fires first, and this path could
+    // never be reached at all. That the two levels are this close together is
+    // worth noticing: on a stop this tight the 14 EMA exit only gets a say
+    // when the average happens to sit inside the entry candle's body.
     const engine = new PaperTradeEngine();
     engine.place(order());
-    const bars = [...textbook()];
-    for (let i = 0; i < 8; i++) bars.push(candle(34 + i, 105, 105.5, 100.5, 101));
+    const bars = [
+      ...base(),
+      candle(30, 99.5, 103.2, 99.4, 103),
+      candle(31, 103, 105.5, 102.8, 105),
+      candle(32, 105, 105.1, 101.0, 102),
+      candle(33, 101, 106.5, 100.95, 106),
+    ];
+    for (let i = 0; i < 6; i++) bars.push(candle(34 + i, 105, 105.5, 101.4, 102));
     engine.replay(bars.map(feed));
 
     const position = engine.snapshot().positions[0]!;
@@ -486,7 +534,8 @@ describe('21 EMA Retest Reclaim — through the engine', () => {
       if (position.status === 'ACTIVE') seen.add(position.stopLoss);
     }
 
-    expect([...seen]).toEqual([99.5]);
+    expect(seen.size).toBe(1);
+    expect([...seen][0]!).toBeCloseTo(102 * 0.999, 6);
   });
 
   it('reaches the same ledger bar-by-bar as in one burst', () => {

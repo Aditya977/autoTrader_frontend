@@ -89,6 +89,15 @@ export interface PaperStrategyContext {
    * them for a strategy that reads price alone.
    */
   readonly retests: readonly PaperRetestSignal[];
+  /**
+   * The contract's lot and tick size.
+   *
+   * A stop "one tick under the low" is a different number of rupees on every
+   * contract, and an order priced off the tick grid is rejected rather than
+   * filled — so a strategy that prices its own stop needs the tick. Optional so
+   * a context built by a test without a contract still type-checks.
+   */
+  readonly contract?: { readonly lotSize: number; readonly tickSize: number };
 }
 
 /** Where the protective levels go, decided once, at the fill. */

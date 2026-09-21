@@ -1,4 +1,4 @@
-import { grossPnlFor, planLots, planSize, pnlPct } from './sizing';
+import { grossPnlFor, planLots, planSize, pnlPct, stopBelowLow } from './sizing';
 import type { PaperContract } from './paper-trade.models';
 
 const NIFTY: PaperContract = {
@@ -130,5 +130,17 @@ describe('pnlPct', () => {
 
   it('is zero rather than infinite when no capital was used', () => {
     expect(pnlPct(500, 0)).toBe(0);
+  });
+});
+
+describe('stopBelowLow', () => {
+  it('rests one tick under the low, on the tick grid', () => {
+    expect(stopBelowLow(102.5, 0.05)).toBe(102.45);
+    expect(stopBelowLow(102.52, 0.05)).toBe(102.45);
+    expect(stopBelowLow(102.52, 0.05, 0)).toBe(102.5);
+  });
+
+  it('keeps an on-grid low exact despite float noise', () => {
+    expect(stopBelowLow(101.05, 0.05, 0)).toBe(101.05);
   });
 });

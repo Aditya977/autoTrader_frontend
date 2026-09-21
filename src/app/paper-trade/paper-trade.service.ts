@@ -186,6 +186,16 @@ export class PaperTradeService {
     return this.engine.hasRetests(instrumentKey);
   }
 
+  /** How many bars the engine currently believes it has seen. */
+  barsSeen(instrumentKey: string): number {
+    return this.engine.barsOf(instrumentKey).length;
+  }
+
+  /** The newest bar the engine holds, for asserting a replay has not run ahead. */
+  newestBarTime(instrumentKey: string): number | null {
+    return this.engine.barsOf(instrumentKey).at(-1)?.timeMs ?? null;
+  }
+
   place(request: PaperOrderRequest): { position: PaperPosition } | { error: string } {
     const key = request.contract.instrumentKey;
     const recorded = this.bars.get(key) ?? [];
@@ -243,6 +253,13 @@ export class PaperTradeService {
 
     const { warmup, session } = this.split();
     if (session.length === 0) return;
+
+    // The engine has already seen this whole session once, live. Replaying it
+    // on top of that history would let a strategy reading `ctx.bars` see the
+    // end of the day on the first bar of the re-run — a look-ahead that makes
+    // every decision meaningless. Rewinding makes the re-run rebuild history
+    // exactly as the live pass did.
+    this.engine.rewindHistory();
 
     // History goes in at once, silently. A strategy with a 21-bar warm-up has
     // to be warm *at the open* — replaying the previous two days at the same
