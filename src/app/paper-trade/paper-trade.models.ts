@@ -239,10 +239,9 @@ export interface PaperRetestSignal {
   /**
    * Bar open time of the candle the overlay marks, epoch ms.
    *
-   * `approachAt ?? resumptionAt`, exactly as `retestMarkers` picks it: the bar
-   * price came *back* on, which the overlay calls "the bar a trader is
-   * deciding on". A retest that has done neither has no bar to claim and is
-   * not a signal.
+   * `resumptionAt ?? approachAt`, exactly as `retestMarkers` picks it: the
+   * candle the retest was confirmed on, or the approach of one still in play.
+   * A retest that has done neither has no bar to claim and is not a signal.
    */
   atMs: number;
   /**

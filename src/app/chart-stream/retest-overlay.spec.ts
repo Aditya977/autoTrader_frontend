@@ -145,8 +145,8 @@ describe('retestMarkers', () => {
   });
 
   it('re-snaps when the displayed interval changes', () => {
-    const oneMinute = retestMarkers([retest({ approachAt: OPEN + 17 * MINUTE })], 60);
-    const fiveMinute = retestMarkers([retest({ approachAt: OPEN + 17 * MINUTE })], 300);
+    const oneMinute = retestMarkers([retest({ resumptionAt: OPEN + 17 * MINUTE })], 60);
+    const fiveMinute = retestMarkers([retest({ resumptionAt: OPEN + 17 * MINUTE })], 300);
     // 09:32 is its own 1-minute bar but belongs to the 09:30 five-minute bar.
     expect(oneMinute[0].time).not.toBe(fiveMinute[0].time);
     expect((fiveMinute[0].time as number) * 1000).toBe(OPEN + 15 * MINUTE);
@@ -157,17 +157,26 @@ describe('retestMarkers', () => {
     expect(retestMarkers([retest({ direction: 'BEARISH' })], 60)[0].position).toBe('aboveBar');
   });
 
-  it('marks a retest once, on the bar price came back on', () => {
-    // One mark, not two: an approach and a resumption two bars apart used to
-    // put a second label on the chart saying nothing the first did not.
+  it('marks a retest once, on the candle it was confirmed on', () => {
+    // The resumption close is when the retest first existed live; the approach
+    // bar, when it printed, had not shown one yet.
     const markers = retestMarkers([retest()], 60);
+    expect(markers.length).toBe(1);
+    expect(markers[0].time as number).toBe(Math.floor((OPEN + 16 * MINUTE) / 1000));
+  });
+
+  it('marks a retest still in play on its approach', () => {
+    const markers = retestMarkers(
+      [retest({ resumptionAt: null, valid: false, unresolved: true })],
+      60,
+    );
     expect(markers.length).toBe(1);
     expect(markers[0].time as number).toBe(Math.floor((OPEN + 15 * MINUTE) / 1000));
   });
 
-  it('falls back to the resumption for a time-based retest', () => {
-    // §4.5 — price never comes back, so there is no approach bar to mark and
-    // no direction for an arrow to point.
+  it('draws a time-based retest as a circle', () => {
+    // §4.5 — price never comes back, so there is no approach for an arrow to
+    // point from.
     const markers = retestMarkers([retest({ scenario: 'time', approachAt: null })], 60);
     expect(markers.length).toBe(1);
     expect(markers[0].shape).toBe('circle');
@@ -188,7 +197,7 @@ describe('retestMarkers', () => {
     const markers = retestMarkers(
       [
         retest({ scenario: 'exact', quality: 0.4 }),
-        retest({ scenario: 'deep', approachAt: OPEN + 15 * MINUTE + 30_000, quality: 0.9 }),
+        retest({ scenario: 'deep', resumptionAt: OPEN + 16 * MINUTE + 30_000, quality: 0.9 }),
       ],
       60,
     );
@@ -211,9 +220,9 @@ describe('retestMarkers', () => {
 
   it('merges more of them the coarser the chart gets', () => {
     const spread = [
-      retest({ approachAt: OPEN + 15 * MINUTE }),
-      retest({ approachAt: OPEN + 17 * MINUTE }),
-      retest({ approachAt: OPEN + 19 * MINUTE }),
+      retest({ resumptionAt: OPEN + 15 * MINUTE }),
+      retest({ resumptionAt: OPEN + 17 * MINUTE }),
+      retest({ resumptionAt: OPEN + 19 * MINUTE }),
     ];
     expect(retestMarkers(spread, 60).length).toBe(3);
     expect(retestMarkers(spread, 300).length).toBe(1);

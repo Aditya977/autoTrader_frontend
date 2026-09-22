@@ -30,9 +30,10 @@
  * ## What "green" means, and why it is not re-derived here
  *
  * It means what it means on the chart: `direction === 'BULLISH'`, which is the
- * field the overlay colours from, on the bar the overlay marks — `approachAt`,
- * or `resumptionAt` for a time correction that never came back. Both are read
- * from the retest the overlay is already drawing, mapped across untouched.
+ * field the overlay colours from, on the bar the overlay marks — `resumptionAt`,
+ * the candle the retest was confirmed on, or `approachAt` for one still in
+ * play. Both are read from the retest the overlay is already drawing, mapped
+ * across untouched.
  *
  * Deliberately no second opinion. Not a quality floor, not a `valid` filter,
  * not a re-scan of the bars: the moment this strategy decided for itself what

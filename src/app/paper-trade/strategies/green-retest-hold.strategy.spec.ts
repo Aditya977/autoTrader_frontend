@@ -203,7 +203,7 @@ describe('Green Retest 3-Candle Buy — which signals it takes', () => {
   });
 
   it('reads the marked bar the way the overlay does', () => {
-    // The overlay marks `approachAt ?? resumptionAt`; a signal carrying a bar
+    // The overlay marks `resumptionAt ?? approachAt`; a signal carrying a bar
     // time is taken on that bar and on no other.
     const engine = new PaperTradeEngine();
     engine.setRetests(KEY, [signal(7)]);

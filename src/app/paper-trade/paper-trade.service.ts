@@ -457,7 +457,7 @@ const PLAYBACK_MS = 180_000;
 /**
  * A chart retest → the signal a strategy sees.
  *
- * `approachAt ?? resumptionAt` and `direction === 'BULLISH'` are taken
+ * `resumptionAt ?? approachAt` and `direction === 'BULLISH'` are taken
  * verbatim from how `retestMarkers` picks the marked bar and its colour, so a
  * strategy acting on "a green retest on this candle" is acting on precisely
  * the mark the user can see. Nothing is re-derived and nothing is filtered —
@@ -467,7 +467,7 @@ const PLAYBACK_MS = 180_000;
  * the same reason the overlay leaves it out of the marks and in the table.
  */
 function toSignal(retest: ChartRetest): PaperRetestSignal | null {
-  const atMs = retest.approachAt ?? retest.resumptionAt;
+  const atMs = retest.resumptionAt ?? retest.approachAt;
   if (atMs === null) return null;
   return {
     atMs,

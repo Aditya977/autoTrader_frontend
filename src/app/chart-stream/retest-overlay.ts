@@ -107,10 +107,14 @@ export function labelFor(retests: readonly ChartRetest[]): string {
 /**
  * One mark per retest, snapped to the drawn interval and merged where they collide.
  *
- * The marked bar is the one price came *back* on — the approach — because that
- * is the bar a trader is deciding on. A time correction never comes back
- * (§4.5), so it marks where the move resumed instead; a retest that has done
- * neither yet has no bar to claim and is left to the table.
+ * The marked bar is the one the retest was **confirmed** on — the resumption
+ * close — because that is the first moment it existed. The backend reads every
+ * bar at its own close from the bars before it, so a mark here is exactly what
+ * was on screen live, and what the strategy traded; marking the approach bar
+ * instead would put it on a candle that, when it printed, had not yet shown a
+ * retest at all. A retest still in play has no confirmation yet and marks its
+ * approach, the bar it is currently standing on; one with neither is left to
+ * the table.
  *
  * `displaySeconds` is the interval the chart is *currently* drawing, not the
  * one the retests were detected on: it is the drawn one a mark has to land on.
@@ -124,7 +128,7 @@ export function retestMarkers(
   const byBar = new Map<string, { time: UTCTimestamp; bullish: boolean; at: ChartRetest[] }>();
 
   for (const retest of retests) {
-    const at = retest.approachAt ?? retest.resumptionAt;
+    const at = retest.resumptionAt ?? retest.approachAt;
     if (at === null) continue;
 
     const bullish = retest.direction === 'BULLISH';
