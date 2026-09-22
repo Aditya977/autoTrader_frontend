@@ -8,6 +8,8 @@ import { NavTabsComponent } from '../shared/nav-tabs.component';
 import { ChartStreamComponent } from './chart-stream.component';
 import { ChartStreamApiService, ChartStreamError } from './chart-stream-api.service';
 import { StrategyApiService } from '../strategy/strategy-api.service';
+import { todayKey } from '../trading/format';
+import { TradingApiService } from '../trading/trading-api.service';
 import { SimulationSocketService } from '../strategy/simulation-socket.service';
 import { StrategyPanelComponent } from '../strategy/strategy-panel.component';
 import { PaperTradeService } from '../paper-trade/paper-trade.service';
@@ -228,131 +230,134 @@ interface ChartPanel {
                fields are a handful of controls, not enough to earn a full row
                of their own next to Instrument's wider one. -->
           <div class="top-row">
-          <!-- Instrument: the fields every session needs, always visible. -->
-          <fieldset class="group">
-            <legend>Instrument</legend>
-            <div class="row">
-              <label>
-                <span>Mode</span>
-                <select [(ngModel)]="mode" name="mode" (ngModelChange)="onModeChange()">
-                  <option value="TEST">Test — replay a past day</option>
-                  <option value="LIVE">Live</option>
-                </select>
-              </label>
-
-              <label>
-                <span>Kind</span>
-                <select [(ngModel)]="kind" name="kind" (ngModelChange)="onKindChange()">
-                  @for (k of instrumentKinds; track k.value) {
-                    <option [value]="k.value">{{ k.label }}</option>
-                  }
-                </select>
-              </label>
-
-              <label>
-                <span>Underlying</span>
-                <select
-                  [(ngModel)]="underlying"
-                  name="underlying"
-                  (ngModelChange)="onUnderlyingChange()"
-                  [disabled]="underlyings().length === 0"
-                >
-                  @for (u of underlyings(); track u) {
-                    <option [value]="u">{{ u }}</option>
-                  }
-                </select>
-              </label>
-
-              @if (needsExpiry()) {
-                <label>
-                  <span>Expiry</span>
-                  <select
-                    [(ngModel)]="expiry"
-                    name="expiry"
-                    (ngModelChange)="onExpiryChange()"
-                    [disabled]="expiries().length === 0"
-                  >
-                    @for (e of expiries(); track e) {
-                      <option [value]="e">{{ e }}{{ e === nextExpiry() ? ' · next' : '' }}</option>
-                    }
-                  </select>
-                </label>
-              }
-            </div>
-
-            @if (isOption()) {
-              <div class="row legs">
-                <label class="leg call">
-                  <span>Call (CE)</span>
-                  <select
-                    [ngModel]="callStrike()"
-                    name="call"
-                    (ngModelChange)="callStrike.set($event)"
-                    [disabled]="calls().length === 0"
-                  >
-                    <option [ngValue]="null">{{ chainPlaceholder(calls().length) }}</option>
-                    @for (c of calls(); track c.instrumentKey) {
-                      <option [ngValue]="c.strike">{{ optionLabel(c) }}</option>
-                    }
-                  </select>
-                </label>
-
-                <label class="leg put">
-                  <span>Put (PE)</span>
-                  <select
-                    [ngModel]="putStrike()"
-                    name="put"
-                    (ngModelChange)="putStrike.set($event)"
-                    [disabled]="puts().length === 0"
-                  >
-                    <option [ngValue]="null">{{ chainPlaceholder(puts().length) }}</option>
-                    @for (p of puts(); track p.instrumentKey) {
-                      <option [ngValue]="p.strike">{{ optionLabel(p) }}</option>
-                    }
-                  </select>
-                </label>
-              </div>
-
-              @if (calls().length) {
-                <p class="hint">
-                  @if (pricedOn()) {
-                    Close on <strong>{{ pricedOn() }}</strong> (spot {{ underlyingClose() ?? '—' }}) —
-                    strikes far from the money show <code>—</code> but stay selectable.
-                  } @else {
-                    <strong>Live</strong> last-traded (spot {{ underlyingClose() ?? '—' }}).
-                  }
-                  Pick a call, a put, or both to chart side by side.
-                </p>
-              }
-            }
-          </fieldset>
-
-          <!-- Replay: only meaningful in TEST mode, so it only exists then. -->
-          @if (mode() === 'TEST') {
+            <!-- Instrument: the fields every session needs, always visible. -->
             <fieldset class="group">
-              <legend>Replay</legend>
+              <legend>Instrument</legend>
               <div class="row">
                 <label>
-                  <span>Session date</span>
-                  <input
-                    type="date"
-                    [(ngModel)]="date"
-                    name="date"
-                    (ngModelChange)="onDateChange()"
-                  />
+                  <span>Mode</span>
+                  <select [(ngModel)]="mode" name="mode" (ngModelChange)="onModeChange()">
+                    <option value="TEST">Test — replay a past day</option>
+                    <option value="LIVE">Live</option>
+                  </select>
                 </label>
 
                 <label>
-                  <span>Speed</span>
-                  <select [(ngModel)]="replaySpeed" name="replaySpeed">
-                    @for (s of speeds; track s.value) {
-                      <option [ngValue]="s.value">{{ s.label }}</option>
+                  <span>Kind</span>
+                  <select [(ngModel)]="kind" name="kind" (ngModelChange)="onKindChange()">
+                    @for (k of instrumentKinds; track k.value) {
+                      <option [value]="k.value">{{ k.label }}</option>
                     }
                   </select>
                 </label>
+
+                <label>
+                  <span>Underlying</span>
+                  <select
+                    [(ngModel)]="underlying"
+                    name="underlying"
+                    (ngModelChange)="onUnderlyingChange()"
+                    [disabled]="underlyings().length === 0"
+                  >
+                    @for (u of underlyings(); track u) {
+                      <option [value]="u">{{ u }}</option>
+                    }
+                  </select>
+                </label>
+
+                @if (needsExpiry()) {
+                  <label>
+                    <span>Expiry</span>
+                    <select
+                      [(ngModel)]="expiry"
+                      name="expiry"
+                      (ngModelChange)="onExpiryChange()"
+                      [disabled]="expiries().length === 0"
+                    >
+                      @for (e of expiries(); track e) {
+                        <option [value]="e">
+                          {{ e }}{{ e === nextExpiry() ? ' · next' : '' }}
+                        </option>
+                      }
+                    </select>
+                  </label>
+                }
               </div>
+
+              @if (isOption()) {
+                <div class="row legs">
+                  <label class="leg call">
+                    <span>Call (CE)</span>
+                    <select
+                      [ngModel]="callStrike()"
+                      name="call"
+                      (ngModelChange)="callStrike.set($event)"
+                      [disabled]="calls().length === 0"
+                    >
+                      <option [ngValue]="null">{{ chainPlaceholder(calls().length) }}</option>
+                      @for (c of calls(); track c.instrumentKey) {
+                        <option [ngValue]="c.strike">{{ optionLabel(c) }}</option>
+                      }
+                    </select>
+                  </label>
+
+                  <label class="leg put">
+                    <span>Put (PE)</span>
+                    <select
+                      [ngModel]="putStrike()"
+                      name="put"
+                      (ngModelChange)="putStrike.set($event)"
+                      [disabled]="puts().length === 0"
+                    >
+                      <option [ngValue]="null">{{ chainPlaceholder(puts().length) }}</option>
+                      @for (p of puts(); track p.instrumentKey) {
+                        <option [ngValue]="p.strike">{{ optionLabel(p) }}</option>
+                      }
+                    </select>
+                  </label>
+                </div>
+
+                @if (calls().length) {
+                  <p class="hint">
+                    @if (pricedOn()) {
+                      Close on <strong>{{ pricedOn() }}</strong> (spot
+                      {{ underlyingClose() ?? '—' }}) — strikes far from the money show
+                      <code>—</code> but stay selectable.
+                    } @else {
+                      <strong>Live</strong> last-traded (spot {{ underlyingClose() ?? '—' }}).
+                    }
+                    Pick a call, a put, or both to chart side by side.
+                  </p>
+                }
+              }
             </fieldset>
-          }
+
+            <!-- Replay: only meaningful in TEST mode, so it only exists then. -->
+            @if (mode() === 'TEST') {
+              <fieldset class="group">
+                <legend>Replay</legend>
+                <div class="row">
+                  <label>
+                    <span>Session date</span>
+                    <input
+                      type="date"
+                      [(ngModel)]="date"
+                      name="date"
+                      (ngModelChange)="onDateChange()"
+                    />
+                  </label>
+
+                  <label>
+                    <span>Speed</span>
+                    <select [(ngModel)]="replaySpeed" name="replaySpeed">
+                      @for (s of speeds; track s.value) {
+                        <option [ngValue]="s.value">{{ s.label }}</option>
+                      }
+                    </select>
+                  </label>
+                </div>
+              </fieldset>
+            }
           </div>
 
           <!-- Levels & history: opt-in annotation, collapsed by default. -->
@@ -541,7 +546,6 @@ interface ChartPanel {
             />
           }
         </section>
-
       } @else {
         <section class="placeholder">
           <p>Nothing streaming yet.</p>
@@ -1040,6 +1044,7 @@ interface ChartPanel {
 export class ChartStreamPageComponent {
   private readonly api = inject(ChartStreamApiService);
   private readonly strategyApi = inject(StrategyApiService);
+  private readonly trading = inject(TradingApiService);
   private readonly simulation = inject(SimulationSocketService);
   /** Protected: the template reads its positions, totals and events directly. */
   protected readonly paper = inject(PaperTradeService);
@@ -1341,6 +1346,7 @@ export class ChartStreamPageComponent {
       this.discoveredKeys.update((keys) => new Map(keys).set(panel.key, event.instrumentKey));
     }
     this.paper.onCandle(event);
+    this.refreshLiveSignals(panel, event.instrumentKey);
   }
 
   /**
@@ -1418,19 +1424,20 @@ export class ChartStreamPageComponent {
   }
 
   /**
-   * Fetches the retests for a contract, then places the order behind them.
+   * Fetches the day's entries for a contract, then places the order behind them.
    *
-   * The **standalone** endpoint rather than the session one, and at
-   * `1minute` regardless of the interval on screen. Both parts matter: the
-   * strategy's rule is written in one-minute candles, so asking for the
-   * displayed interval would hand it signals found on 15-minute bars and its
-   * "signal candle" would mean something else entirely. The standalone
-   * endpoint takes an instrument and a date, so it also works for a session
-   * that has already completed — which, at the default replay speed, is every
-   * session by the time anyone presses the button.
+   * **Not the retest overlay.** The overlay analyses the whole day at once,
+   * so a retest's green mark sits on its approach candle even though nobody
+   * could have known it was a retest until price resumed a candle or more
+   * later. Trading those marks is trading with hindsight — it measured 82%
+   * winners on NIFTY against 45% for the same rule restricted to what was
+   * knowable at the time.
    *
-   * This is the overlay's own detection, unchanged: the same endpoint the
-   * chart's Retests toggle calls, with the same defaults.
+   * Instead this asks the backend for the entries its live engine would take:
+   * the same strategy code, fed the same bars one closed minute at a time.
+   * The chart's paper trades and the Trading Dashboard therefore agree by
+   * construction. On a LIVE chart the list is refreshed as bars close — see
+   * {@link refreshLiveSignals}.
    */
   private loadRetestsThenPlace(request: PaperOrderRequest): void {
     const contract = request.contract;
@@ -1440,25 +1447,54 @@ export class ChartStreamPageComponent {
       return;
     }
 
-    this.paperError.set('Loading retest signals…');
-    this.api
-      .retests({
+    this.paperError.set('Loading strategy signals…');
+    this.fetchSignals(panel, contract.instrumentKey, () => {
+      this.paperError.set(null);
+      this.commitPaperTrade(request);
+    });
+  }
+
+  /** When each LIVE instrument's signals were last refreshed, epoch ms. */
+  private readonly signalsFetchedAt = new Map<string, number>();
+
+  /**
+   * On a LIVE chart, new entries appear as bars close, so the list fetched
+   * when the order was placed goes stale within a minute. Refetched at most
+   * once a minute, and only while a retest-driven order is working on that
+   * instrument.
+   */
+  private refreshLiveSignals(panel: ChartPanel, instrumentKey: string): void {
+    if (panel.request.mode !== 'LIVE' || !this.paper.needsSignals(instrumentKey)) return;
+    const last = this.signalsFetchedAt.get(instrumentKey) ?? 0;
+    if (Date.now() - last < 55_000) return;
+    this.fetchSignals(panel, instrumentKey);
+  }
+
+  private fetchSignals(panel: ChartPanel, instrumentKey: string, then?: () => void): void {
+    this.signalsFetchedAt.set(instrumentKey, Date.now());
+    this.trading
+      .entries({
+        strategyId: GREEN_RETEST_BACKEND_ID,
         instrument: panel.request.instrument,
-        interval: '1minute',
-        ...(panel.request.date ? { date: panel.request.date } : {}),
-        // Unresolved retests are the ones happening *now*, which on a live
-        // chart are the only ones there are to trade.
-        includeUnresolved: true,
+        date: panel.request.date ?? todayKey(),
       })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (found) => {
-          this.paper.setRetests(contract.instrumentKey, found.retests);
-          this.paperError.set(null);
-          this.commitPaperTrade(request);
+          this.paper.setSignals(
+            instrumentKey,
+            found.entries.map((entry) => ({
+              atMs: entry.barAt,
+              bullish: true,
+              quality: qualityOf(entry.reason),
+              valid: true,
+              scenario: 'confirmed',
+            })),
+          );
+          then?.();
         },
         error: (e: ChartStreamError) =>
-          this.paperError.set(`Could not load retest signals — ${e.message}`),
+          this.paperError.set(`Could not load strategy signals — ${e.message}`),
       });
   }
 
@@ -1900,4 +1936,13 @@ export class ChartStreamPageComponent {
       tickSize: row.tickSize,
     };
   }
+}
+
+/** The backend strategy the chart's Green Retest follows — the dashboard's. */
+const GREEN_RETEST_BACKEND_ID = 'two-candle-retest';
+
+/** The detector's quality, read back out of the entry reason; 1 when absent. */
+function qualityOf(reason: string): number {
+  const match = /quality ([0-9.]+)/.exec(reason);
+  return match ? Number(match[1]) : 1;
 }

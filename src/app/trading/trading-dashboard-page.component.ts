@@ -100,6 +100,7 @@ const LIVE_REFRESH_MS = 5_000;
             [busy]="busy()"
             (start)="startLive($event)"
             (stop)="stopLive($event)"
+            (removeInstrument)="removeInstrument($event)"
           />
         } @else {
           <h2>Run a backtest</h2>
@@ -107,7 +108,9 @@ const LIVE_REFRESH_MS = 5_000;
             [strategies]="strategies()"
             [busy]="busy()"
             [result]="lastBacktest()"
+            [storedTrades]="storedBacktests()"
             (run)="runBacktest($event)"
+            (clear)="clearBacktests()"
           />
         }
       </section>
@@ -257,6 +260,7 @@ export class TradingDashboardPageComponent implements OnInit {
   readonly performance = signal<DashboardPerformance | null>(null);
   readonly trades = signal<DashboardTrade[]>([]);
   readonly lastBacktest = signal<BacktestRunSummary | null>(null);
+  readonly storedBacktests = signal(0);
   readonly from = signal('');
   readonly to = signal('');
   readonly busy = signal(false);
@@ -322,6 +326,35 @@ export class TradingDashboardPageComponent implements OnInit {
     });
   }
 
+  removeInstrument(target: { sessionId: string; instrumentKey: string }): void {
+    this.busy.set(true);
+    this.api.removeInstrument(target.sessionId, target.instrumentKey).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.refresh();
+      },
+      error: (e: Error) => {
+        this.busy.set(false);
+        this.error.set(`Could not remove the instrument: ${e.message}`);
+      },
+    });
+  }
+
+  clearBacktests(): void {
+    this.busy.set(true);
+    this.api.clearBacktests().subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.lastBacktest.set(null);
+        this.refresh();
+      },
+      error: (e: Error) => {
+        this.busy.set(false);
+        this.error.set(`Could not clear backtest history: ${e.message}`);
+      },
+    });
+  }
+
   stopLive(sessionId: string): void {
     this.busy.set(true);
     this.api.stopLive(sessionId).subscribe({
@@ -366,14 +399,17 @@ export class TradingDashboardPageComponent implements OnInit {
         ...(this.to() ? { to: this.to() } : {}),
         limit: 1000,
       }),
+      // All-time backtest count, for the clear button, whatever range is shown.
+      backtests: this.api.performance('BACKTEST'),
     })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: ({ sessions, overview, performance, trades }) => {
+        next: ({ sessions, overview, performance, trades, backtests }) => {
           this.sessions.set(sessions.sessions);
           this.overview.set(overview);
           this.performance.set(performance);
           this.trades.set(trades.trades);
+          this.storedBacktests.set(backtests.range.trades);
         },
         error: (e: Error) => this.error.set(`Could not load the dashboard: ${e.message}`),
       });

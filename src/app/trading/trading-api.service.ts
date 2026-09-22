@@ -4,7 +4,7 @@ import { Observable, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import { ChartStreamError } from '../chart-stream/chart-stream-api.service';
-import type { ApiErrorBody } from '../chart-stream/chart-stream.models';
+import type { ApiErrorBody, InstrumentRequest } from '../chart-stream/chart-stream.models';
 import type {
   BacktestRunSummary,
   DashboardOverview,
@@ -13,6 +13,7 @@ import type {
   LiveSessionSnapshot,
   RunBacktestRequest,
   StartLiveTradingRequest,
+  StrategyEntries,
   TradeHistoryQuery,
   TradeMode,
 } from './trading.models';
@@ -41,9 +42,40 @@ export class TradingApiService {
       .pipe(catchError(this.unwrap));
   }
 
+  /** Takes one instrument out of a running session; the others keep trading. */
+  removeInstrument(sessionId: string, instrumentKey: string): Observable<LiveSessionSnapshot> {
+    return this.http
+      .post<LiveSessionSnapshot>(`${this.base}/strategy/live/${sessionId}/instruments/remove`, {
+        instrumentKey,
+      })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /** Deletes backtest history — every run, or one. Live history is never touched. */
+  clearBacktests(runId?: string): Observable<{ deleted: number }> {
+    const params = runId ? new HttpParams().set('runId', runId) : new HttpParams();
+    return this.http
+      .delete<{ deleted: number }>(`${this.base}/strategy/backtest/trades`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
   liveSessions(): Observable<{ sessions: LiveSessionSnapshot[] }> {
     return this.http
       .get<{ sessions: LiveSessionSnapshot[] }>(`${this.base}/strategy/live`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The entries the backend's live engine would take on one instrument on one
+   * day — computed from closed bars only, by the Trading Dashboard's code.
+   */
+  entries(request: {
+    strategyId: string;
+    instrument: InstrumentRequest;
+    date: string;
+  }): Observable<StrategyEntries> {
+    return this.http
+      .post<StrategyEntries>(`${this.base}/strategy/signals/entries`, request)
       .pipe(catchError(this.unwrap));
   }
 

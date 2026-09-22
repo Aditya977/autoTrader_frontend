@@ -18,6 +18,7 @@ import { DestroyRef, Injectable, computed, inject, signal } from '@angular/core'
 import { istDateKey } from '../chart-stream/chart-time';
 import type { ChartCandleEvent } from '../chart-stream/chart-stream.models';
 import { PaperTradeEngine } from './paper-trade-engine';
+import { paperStrategyById } from './strategies/registry';
 import type { ChartRetest } from '../chart-stream/chart-stream.models';
 import type {
   PaperMarketUpdate,
@@ -179,6 +180,30 @@ export class PaperTradeService {
    */
   setRetests(instrumentKey: string, retests: readonly ChartRetest[]): void {
     this.engine.setRetests(instrumentKey, retests.map(toSignal).filter(isSignal));
+  }
+
+  /**
+   * Hands the engine ready-made signals — the entries the backend's live
+   * engine would take — rather than retests to interpret.
+   *
+   * This is what the Green Retest rule reads now. Retests fetched for a whole
+   * day carry the future: a retest's mark sits on its approach candle, but it
+   * is only known to be a retest once price has resumed, bars later. The
+   * backend's entries are computed bar by bar from closed bars only, by the
+   * same code the Trading Dashboard runs, so the chart cannot see ahead and
+   * cannot disagree with the dashboard.
+   */
+  setSignals(instrumentKey: string, signals: readonly PaperRetestSignal[]): void {
+    this.engine.setRetests(instrumentKey, signals);
+  }
+
+  /** Whether an order or position on this instrument is waiting on retest signals. */
+  needsSignals(instrumentKey: string): boolean {
+    return this.live().some(
+      (p) =>
+        p.contract.instrumentKey === instrumentKey &&
+        paperStrategyById(p.strategyId)?.needsRetests === true,
+    );
   }
 
   /** Whether retests have been supplied for an instrument yet. */

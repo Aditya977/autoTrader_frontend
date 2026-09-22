@@ -76,6 +76,7 @@ import { TradingSetupFormComponent } from './trading-setup-form.component';
               <th class="num">Trades</th>
               <th class="num">Realised</th>
               <th>Note</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -110,6 +111,18 @@ import { TradingSetupFormComponent } from './trading-setup-form.component';
                   } @else if (lane.ticks === 0) {
                     <span class="muted">waiting for ticks</span>
                   }
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    class="remove"
+                    [disabled]="busy()"
+                    (click)="
+                      confirmRemove(s, lane.instrumentKey, lane.tradingsymbol, !!lane.openTrade)
+                    "
+                  >
+                    Remove
+                  </button>
                 </td>
               </tr>
             }
@@ -173,6 +186,19 @@ import { TradingSetupFormComponent } from './trading-setup-form.component';
     }
     .feed.down {
       color: var(--warn);
+    }
+    .remove {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.15rem 0.5rem;
+      font-size: 0.7rem;
+      cursor: pointer;
+    }
+    .remove:hover:not(:disabled) {
+      color: var(--danger);
+      border-color: var(--danger);
     }
     .danger {
       margin-left: auto;
@@ -292,6 +318,25 @@ export class LiveSessionPanelComponent {
 
   readonly start = output<StartLiveTradingRequest>();
   readonly stop = output<string>();
+  readonly removeInstrument = output<{ sessionId: string; instrumentKey: string }>();
+
+  /** Removing squares off an open position, so say so before doing it. */
+  confirmRemove(
+    session: LiveSessionSnapshot,
+    instrumentKey: string,
+    tradingsymbol: string,
+    hasPosition: boolean,
+  ): void {
+    const last = session.instruments.length === 1;
+    const message = last
+      ? `${tradingsymbol} is the only instrument — removing it stops the whole session. Continue?`
+      : hasPosition
+        ? `Remove ${tradingsymbol}? Its open position will be squared off at the last price.`
+        : `Remove ${tradingsymbol} from this session? The others keep trading.`;
+    if (window.confirm(message)) {
+      this.removeInstrument.emit({ sessionId: session.sessionId, instrumentKey });
+    }
+  }
 
   readonly running = computed(
     () => this.sessions().find((s) => s.status === 'RUNNING' || s.status === 'STARTING') ?? null,

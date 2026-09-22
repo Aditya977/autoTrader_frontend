@@ -19,7 +19,6 @@ export interface TradingInstrument {
 
 export interface StartLiveTradingRequest {
   strategyId: string;
-  params?: Record<string, number>;
   capital: number;
   maxCapitalPerTrade?: number;
   instruments: TradingInstrument[];
@@ -193,6 +192,14 @@ export interface BacktestRunSummary {
   recorded: number;
   stats: PnlStats;
   trades: DashboardTrade[];
+  /** Each instrument's traded bars: `[openTimeMs, open, high, low, close]`. */
+  charts: BacktestChart[];
+}
+
+export interface BacktestChart {
+  instrumentKey: string;
+  tradingsymbol: string;
+  bars: [number, number, number, number, number][];
 }
 
 export interface TradeHistoryQuery {
@@ -201,4 +208,18 @@ export interface TradeHistoryQuery {
   to?: string;
   runId?: string;
   limit?: number;
+}
+
+/** The day's live-possible entries for one instrument — what the chart page follows. */
+export interface StrategyEntries {
+  instrumentKey: string;
+  tradingsymbol: string;
+  date: string;
+  entries: {
+    /** Open time of the signal candle, epoch ms. */
+    barAt: number;
+    entryPrice: number;
+    stopLoss: number | null;
+    reason: string;
+  }[];
 }

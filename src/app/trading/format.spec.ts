@@ -1,5 +1,5 @@
 import { addDays, dateTime, money, percent, signedMoney, todayKey, tone } from './format';
-import { toInstrument } from './ui/instrument-list-editor.component';
+import { instrumentLabel, toInstrument } from './ui/instrument-list-editor.component';
 
 describe('trading format', () => {
   it('formats rupees Indian-style, with a real minus sign', () => {
@@ -58,5 +58,21 @@ describe('instrument rows', () => {
     ).toEqual([
       { instrument: { type: 'PE', underlying: 'NIFTY', expiry: '2026-09-25', strike: 24500 } },
     ]);
+  });
+});
+
+describe('instrument chips', () => {
+  it('read the way a trader names the contract', () => {
+    expect(
+      instrumentLabel({
+        instrument: { type: 'CE', underlying: 'NIFTY', expiry: '2026-09-25', strike: 24500 },
+      }),
+    ).toMatch(/^NIFTY 24500 CE · 25 Sept?$/);
+    expect(
+      instrumentLabel({
+        instrument: { type: 'FUTURE', underlying: 'BANKNIFTY', expiry: '2026-09-25' },
+      }),
+    ).toMatch(/^BANKNIFTY FUT · 25 Sept?$/);
+    expect(instrumentLabel({ instrument: { type: 'INDEX', underlying: 'NIFTY' } })).toBe('NIFTY');
   });
 });

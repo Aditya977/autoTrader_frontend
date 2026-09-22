@@ -19,9 +19,13 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
  * live run it is supposed to predict. The backtest variant adds a date range
  * and nothing else.
  *
- * Sizing is not asked for. Every entry takes the most whole lots the free
- * balance (capped by "max per trade", if set) affords at the fill price; the
- * backend does the arithmetic so the preview and the order cannot disagree.
+ * **The strategy's rules are not editable here.** Its stop buffer, quality
+ * floor and the rest are defined in the strategy itself and shown read-only,
+ * so every run — live or backtest — trades exactly the rule that was written
+ * and reviewed, not a variant somebody typed into a box.
+ *
+ * Sizing is not asked for either: every entry takes the most whole lots the
+ * free balance (capped by "max per trade", if set) affords at the fill price.
  */
 @Component({
   selector: 'app-trading-setup-form',
@@ -29,84 +33,89 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
   imports: [FormsModule, InstrumentListEditorComponent],
   template: `
     <form class="form" (ngSubmit)="submit()">
-      <div class="grid">
-        <label>
-          <span>Strategy</span>
-          <select name="strategy" [ngModel]="strategyId()" (ngModelChange)="strategyId.set($event)">
-            @for (s of strategies(); track s.id) {
-              <option [value]="s.id">{{ s.name }}</option>
-            }
-          </select>
-        </label>
-        <label>
-          <span>Capital (₹)</span>
-          <input
-            name="capital"
-            type="number"
-            min="1"
-            step="1000"
-            [ngModel]="capital()"
-            (ngModelChange)="capital.set($event)"
-          />
-        </label>
-        <label>
-          <span>Max per trade (₹, optional)</span>
-          <input
-            name="maxPerTrade"
-            type="number"
-            min="0"
-            step="1000"
-            placeholder="whole balance"
-            [ngModel]="maxPerTrade()"
-            (ngModelChange)="maxPerTrade.set($event)"
-          />
-        </label>
-        @if (mode() === 'BACKTEST') {
-          <label>
-            <span>From</span>
-            <input name="from" type="date" [ngModel]="from()" (ngModelChange)="from.set($event)" />
-          </label>
-          <label>
-            <span>To</span>
-            <input name="to" type="date" [ngModel]="to()" (ngModelChange)="to.set($event)" />
-          </label>
-        }
-      </div>
-
-      @if (strategy(); as s) {
-        <p class="desc">{{ s.description }}</p>
-        @if (s.paramSpecs.length) {
-          <div class="grid params">
-            @for (spec of s.paramSpecs; track spec.key) {
-              <label [title]="spec.description">
-                <span>{{ spec.label }}</span>
+      <div class="columns">
+        <div class="col">
+          <h3>Account &amp; strategy</h3>
+          <div class="grid">
+            <label class="wide">
+              <span>Strategy</span>
+              <select
+                name="strategy"
+                [ngModel]="strategyId()"
+                (ngModelChange)="strategyId.set($event)"
+              >
+                @for (s of strategies(); track s.id) {
+                  <option [value]="s.id">{{ s.name }}</option>
+                }
+              </select>
+            </label>
+            <label>
+              <span>Capital (₹)</span>
+              <input
+                name="capital"
+                type="number"
+                min="1"
+                step="1000"
+                [ngModel]="capital()"
+                (ngModelChange)="capital.set($event)"
+              />
+            </label>
+            <label>
+              <span>Max per trade (₹)</span>
+              <input
+                name="maxPerTrade"
+                type="number"
+                min="0"
+                step="1000"
+                placeholder="whole balance"
+                [ngModel]="maxPerTrade()"
+                (ngModelChange)="maxPerTrade.set($event)"
+              />
+            </label>
+            @if (mode() === 'BACKTEST') {
+              <label>
+                <span>From</span>
                 <input
-                  type="number"
-                  [name]="'p_' + spec.key"
-                  [min]="spec.min"
-                  [max]="spec.max"
-                  [step]="spec.step"
-                  [ngModel]="paramValue(spec.key, s)"
-                  (ngModelChange)="setParam(spec.key, $event)"
+                  name="from"
+                  type="date"
+                  [ngModel]="from()"
+                  (ngModelChange)="from.set($event)"
                 />
+              </label>
+              <label>
+                <span>To</span>
+                <input name="to" type="date" [ngModel]="to()" (ngModelChange)="to.set($event)" />
               </label>
             }
           </div>
-        }
-      }
 
-      <div class="instruments">
-        <span class="section">Instruments — each is streamed and traded independently</span>
-        <app-instrument-list-editor [(value)]="instruments" />
+          @if (strategy(); as s) {
+            <div class="rule">
+              <p>{{ s.description }}</p>
+              @if (s.paramSpecs.length) {
+                <dl>
+                  @for (spec of s.paramSpecs; track spec.key) {
+                    <div [title]="spec.description">
+                      <dt>{{ spec.label }}</dt>
+                      <dd>{{ s.params[spec.key] }}</dd>
+                    </div>
+                  }
+                </dl>
+                <span class="fixed">Defined in the strategy — the same for every run.</span>
+              }
+            </div>
+          }
+        </div>
+
+        <div class="col">
+          <h3>
+            Instruments
+            <span class="count">{{ instruments().length }}</span>
+          </h3>
+          <p class="sub">Each one is streamed and traded independently.</p>
+          <app-instrument-list-editor [(value)]="instruments" />
+        </div>
       </div>
-
-      <p class="note">
-        Lots are sized automatically: the most whole lots the available balance
-        @if (maxPerTrade()) {
-          (capped at ₹{{ maxPerTrade() }} per trade)
-        }
-        buys at the fill price, after reserving the ₹40 exit charge.
-      </p>
 
       <div class="actions">
         <button type="submit" class="primary" [disabled]="!!problem() || busy()">
@@ -114,6 +123,14 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
         </button>
         @if (problem(); as p) {
           <span class="why">{{ p }}</span>
+        } @else {
+          <span class="note">
+            Lots sized automatically: the most whole lots the available balance
+            @if (maxPerTrade()) {
+              (up to ₹{{ maxPerTrade() }} a trade)
+            }
+            buys at the fill price.
+          </span>
         }
       </div>
     </form>
@@ -121,44 +138,112 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
   styles: `
     .form {
       display: grid;
-      gap: 0.75rem;
+      gap: 0.9rem;
+    }
+    .columns {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+      gap: 1rem;
+    }
+    @media (max-width: 900px) {
+      .columns {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+    .col {
+      display: grid;
+      gap: 0.6rem;
+      align-content: start;
+      padding: 0.85rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      min-width: 0;
+    }
+    h3 {
+      margin: 0;
+      font-size: 0.78rem;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    .count {
+      font-size: 0.68rem;
+      font-weight: 500;
+      padding: 0 0.4rem;
+      border-radius: 999px;
+      background: var(--surface-3);
+      color: var(--text-muted);
+    }
+    .sub {
+      margin: -0.35rem 0 0;
+      font-size: 0.72rem;
+      color: var(--text-muted);
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-      gap: 0.6rem;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.55rem;
+    }
+    .wide {
+      grid-column: 1 / -1;
     }
     label {
       display: grid;
       gap: 0.2rem;
-      font-size: 0.72rem;
+      font-size: 0.7rem;
       color: var(--text-muted);
     }
     input,
     select {
-      background: var(--surface-2);
+      background: var(--surface);
       color: var(--text);
       border: 1px solid var(--border);
       border-radius: var(--radius-sm);
       padding: 0.35rem 0.5rem;
       font: inherit;
       font-size: 0.8rem;
+      min-width: 0;
     }
-    .desc,
-    .note {
-      margin: 0;
-      font-size: 0.75rem;
+    .rule {
+      display: grid;
+      gap: 0.45rem;
+      font-size: 0.72rem;
       color: var(--text-muted);
       line-height: 1.5;
     }
-    .section {
-      display: block;
-      font-size: 0.72rem;
+    .rule p {
+      margin: 0;
+    }
+    dl {
+      margin: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+    }
+    dl div {
+      display: inline-flex;
+      gap: 0.35rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      background: var(--surface-3);
+    }
+    dt {
       color: var(--text-muted);
-      margin-bottom: 0.35rem;
+    }
+    dd {
+      margin: 0;
+      color: var(--text);
+      font-family: var(--font-mono);
+    }
+    .fixed {
+      font-size: 0.66rem;
+      color: var(--text-faint);
     }
     .actions {
       display: flex;
+      flex-wrap: wrap;
       gap: 0.75rem;
       align-items: center;
     }
@@ -178,6 +263,10 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
     .why {
       font-size: 0.75rem;
       color: var(--warn);
+    }
+    .note {
+      font-size: 0.72rem;
+      color: var(--text-muted);
     }
   `,
 })
@@ -205,7 +294,6 @@ export class TradingSetupFormComponent {
   readonly instruments = signal<TradingInstrument[]>(
     this.prefs.get<TradingInstrument[]>('trading.instruments', []),
   );
-  private readonly params = signal<Record<string, number>>({});
 
   readonly strategy = computed(
     () => this.strategies().find((s) => s.id === this.strategyId()) ?? null,
@@ -215,7 +303,7 @@ export class TradingSetupFormComponent {
     if (!this.strategy()) return 'Choose a strategy.';
     const capital = Number(this.capital());
     if (!Number.isFinite(capital) || capital <= 0) return 'Enter the capital.';
-    if (this.instruments().length === 0) return 'Add at least one complete instrument.';
+    if (this.instruments().length === 0) return 'Add at least one instrument.';
     if (this.mode() === 'BACKTEST') {
       if (!this.from() || !this.to()) return 'Choose a date range.';
       if (this.from() > this.to()) return '“From” is after “To”.';
@@ -237,29 +325,11 @@ export class TradingSetupFormComponent {
     });
   }
 
-  paramValue(key: string, strategy: StrategyDescriptor): number {
-    return this.params()[key] ?? strategy.params[key] ?? 0;
-  }
-
-  setParam(key: string, value: number | string): void {
-    const n = Number(value);
-    this.params.update((p) => {
-      const next = { ...p };
-      if (Number.isFinite(n) && value !== '') next[key] = n;
-      else delete next[key];
-      return next;
-    });
-  }
-
   submit(): void {
     const strategy = this.strategy();
     if (this.problem() || !strategy) return;
     const maxPerTrade = Number(this.maxPerTrade());
-    // Only overrides that differ from the defaults travel: the run records
-    // what was chosen, and a default restated is not a choice.
-    const overrides = Object.fromEntries(
-      Object.entries(this.params()).filter(([k, v]) => strategy.params[k] !== v),
-    );
+    // No `params`: the strategy's own values are the rule.
     const base: StartLiveTradingRequest = {
       strategyId: strategy.id,
       capital: Number(this.capital()),
@@ -267,7 +337,6 @@ export class TradingSetupFormComponent {
       ...(Number.isFinite(maxPerTrade) && maxPerTrade > 0
         ? { maxCapitalPerTrade: maxPerTrade }
         : {}),
-      ...(Object.keys(overrides).length ? { params: overrides } : {}),
     };
     if (this.mode() === 'BACKTEST') {
       this.runBacktest.emit({ ...base, from: this.from(), to: this.to() });
