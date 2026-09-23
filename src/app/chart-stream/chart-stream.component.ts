@@ -130,6 +130,24 @@ import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overla
 import type { PaperPosition } from '../paper-trade/paper-trade.models';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
+import { TrendPanelComponent } from '../trend/trend-panel.component';
+import {
+  DIRECTION_LABELS,
+  chartTimeframe,
+  eventNotesAtBar,
+  readingAt,
+  trendLines,
+  trendMarkers,
+  trendlineSegments,
+  type ChartAxis,
+  type TrendDetail,
+} from '../trend/trend-overlay';
+import {
+  DEFAULT_TREND_TIMEFRAMES,
+  type TimeframeTrend,
+  type TrendResult,
+  type TrendTimeframe,
+} from '../trend/trend.models';
 
 /**
  * How a support/resistance level is drawn.
@@ -194,6 +212,7 @@ interface Readout {
     PatternTimeframeTableComponent,
     CandlePatternListComponent,
     MarketEnginePanelComponent,
+    TrendPanelComponent,
     OverlayMenuComponent,
   ],
   template: `
@@ -238,7 +257,12 @@ interface Readout {
             </button>
 
             @if (showOverlays()) {
-              <app-overlay-menu title="Overlays" [groups]="overlayGroups" [count]="overlayCount()" (clearAll)="clearOverlays()" />
+              <app-overlay-menu
+                title="Overlays"
+                [groups]="overlayGroups"
+                [count]="overlayCount()"
+                (clearAll)="clearOverlays()"
+              />
             }
           </div>
 
@@ -503,6 +527,25 @@ interface Readout {
         <p class="error">{{ message }}</p>
       }
 
+      <!-- Every timeframe's trend, below the chart like the engine's read-out. -->
+      @if (showTrend()) {
+        <div class="engine-wrap">
+          <app-trend-panel
+            [result]="trend()"
+            [focus]="trendFocus()"
+            [automatic]="trendFocusIsAutomatic()"
+            [detail]="trendDetail()"
+            [knownAtMs]="trendKnownAt()"
+            (focusChange)="setTrendFocus($event)"
+            (detailChange)="setTrendDetail($event)"
+          />
+        </div>
+      }
+
+      @if (trendError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
       @if (levelRejectionError(); as message) {
         <p class="error">{{ message }}</p>
       }
@@ -546,6 +589,15 @@ interface Readout {
             </dl>
             <!-- What the engine mark on this candle means, so a label is never a riddle. -->
             @for (note of engineNotes(); track $index) {
+              <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
+                <div class="t-note-title">{{ note.up ? '↑' : '↓' }} {{ note.title }}</div>
+                @for (line of note.lines; track $index) {
+                  <p>{{ line }}</p>
+                }
+              </div>
+            }
+            <!-- The trend events on this candle — breaks, false breaks, reversals. -->
+            @for (note of trendNotes(); track $index) {
               <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
                 <div class="t-note-title">{{ note.up ? '↑' : '↓' }} {{ note.title }}</div>
                 @for (line of note.lines; track $index) {
@@ -1414,6 +1466,23 @@ export class ChartStreamComponent {
             return engine ? countLabel(engine.readings.length, 'reading') : null;
           },
         },
+        {
+          id: 'trend',
+          name: 'Trend',
+          hint: 'Structure-first trend on 1m → 1D: swings, breaks, reversals, read-out below',
+          swatch: 'trd',
+          blocked: () => this.needsSession(),
+          on: () => this.showTrend(),
+          toggle: () => this.toggleTrend(),
+          note: () => {
+            if (this.trendLoading() && !this.trend()) return '…';
+            const focus = this.focusedTrend();
+            const reading = focus ? readingAt(focus, this.trendKnownAt()) : null;
+            return focus && reading
+              ? `${focus.timeframe} ${DIRECTION_LABELS[reading.direction].toLowerCase()}`
+              : null;
+          },
+        },
       ],
     },
     {
@@ -1474,8 +1543,7 @@ export class ChartStreamComponent {
   protected closeMenusOutside(event: MouseEvent): void {
     if (!this.showOverlays() && !this.showIndicators()) return;
     const target = event.target;
-    const inside = (el: Element | null) =>
-      !!el && target instanceof Node && el.contains(target);
+    const inside = (el: Element | null) => !!el && target instanceof Node && el.contains(target);
     const [overlayHost, indicatorHost] = Array.from(
       (this.hostElement.nativeElement as HTMLElement).querySelectorAll('.ind'),
     );
@@ -1598,6 +1666,59 @@ export class ChartStreamComponent {
   readonly levelRejectionLoading = signal(false);
   readonly levelRejectionError = signal<string | null>(null);
   private levelRejectionLines: IPriceLine[] = [];
+
+  /* --- trend ---------------------------------------------------------- */
+  /**
+   * The structure-first trend on every timeframe, from the session endpoint —
+   * bounded by the session's clock server-side, and refreshed as each bar
+   * closes. The candles show the swings and breaks of one timeframe, the
+   * *focus*: the one matching the bar on screen unless the user picked another
+   * in the panel.
+   */
+  readonly trend = signal<TrendResult | null>(null);
+  readonly showTrend = signal(false);
+  readonly trendLoading = signal(false);
+  readonly trendError = signal<string | null>(null);
+  /** The user's pick in the panel; `null` follows the chart's bar size. */
+  private readonly trendFocusChoice = signal<TrendTimeframe | null>(null);
+  private trendPriceLines: IPriceLine[] = [];
+  /** One line series per drawn trendline, by the backend's line id. */
+  private readonly trendlineSeries = new Map<number, ISeriesApi<'Line'>>();
+  /** Ids of the trendlines drawn right now — the breaks a clean chart may mark. */
+  private trendDrawnLines = new Set<number>();
+  /** Clean by default: the current structure, not every swing ever printed. */
+  readonly trendDetail = signal<TrendDetail>('clean');
+  private trendRequest: Subscription | null = null;
+  /** A new bar closed while a request was out: ask once more when it lands. */
+  private trendMoved = false;
+  /** Which session and bar count the held reading answers. */
+  private trendFetchedFor: string | null = null;
+
+  readonly trendFocus = computed<TrendTimeframe | null>(
+    () =>
+      this.trendFocusChoice() ??
+      chartTimeframe(
+        this.displaySeconds(),
+        this.trend()?.timeframes.map((t) => t.timeframe) ?? DEFAULT_TREND_TIMEFRAMES,
+      ),
+  );
+
+  /** Whether the drawn timeframe follows the chart's bar size or was picked. */
+  readonly trendFocusIsAutomatic = computed(() => this.trendFocusChoice() === null);
+
+  readonly focusedTrend = computed<TimeframeTrend | null>(
+    () => this.trend()?.timeframes.find((t) => t.timeframe === this.trendFocus()) ?? null,
+  );
+
+  /**
+   * While replaying, the close of the newest bar on screen: the trend may show
+   * only what was known by then. `null` off replay. Keyed on `revision`
+   * because the drawn series is not itself a signal.
+   */
+  readonly trendKnownAt = computed<number | null>(() => {
+    this.revision();
+    return this.knownAtNow();
+  });
 
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
@@ -1906,6 +2027,7 @@ export class ChartStreamComponent {
     this.destroyRef.onDestroy(() => {
       this.emaSeries.clear();
       this.pdrSeries.clear();
+      this.trendlineSeries.clear();
       this.vwapSeries = undefined;
       this.overlay.destroy();
       this.candleOverlay.destroy();
@@ -2007,6 +2129,11 @@ export class ChartStreamComponent {
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
+    // The trend belongs to the instrument that produced it; the focus pick is
+    // about how that chart was being read.
+    this.showTrend.set(false);
+    this.trendFocusChoice.set(null);
+    this.clearTrend();
     // The paper lines describe prices in the series being replaced. The
     // positions themselves are the page's to keep or clear — this only stops
     // the old instrument's levels being drawn over the new one's bars.
@@ -2462,6 +2589,212 @@ export class ChartStreamComponent {
     this.drawMarkers();
   }
 
+  /**
+   * Shows or hides the trend. Turning it on fetches when nothing is held;
+   * turning it off keeps the reading for an instant re-show, and stops asking.
+   */
+  toggleTrend(): void {
+    const next = !this.showTrend();
+    this.showTrend.set(next);
+    this.drawTrend();
+    if (next) this.refreshTrend({ force: !this.trend() });
+  }
+
+  /** The panel picked a timeframe to draw; picking the automatic one follows the chart again. */
+  protected setTrendFocus(timeframe: TrendTimeframe): void {
+    const automatic = chartTimeframe(
+      this.displaySeconds(),
+      this.trend()?.timeframes.map((t) => t.timeframe) ?? DEFAULT_TREND_TIMEFRAMES,
+    );
+    this.trendFocusChoice.set(timeframe === automatic ? null : timeframe);
+    this.drawTrend();
+  }
+
+  /**
+   * Asks the session for its trend — once per newly closed bar.
+   *
+   * The session endpoint, not the standalone one, because the session's clock
+   * is what bounds the reading: a TEST replay part-way through a day is read as
+   * of that moment. At most one request is out; bars that close meanwhile are
+   * folded into a single follow-up, the same economy the candlestick overlay
+   * uses, so a fast replay cannot starve it and a live chart asks once a minute.
+   */
+  private refreshTrend(options: { force?: boolean } = {}): void {
+    if (!this.showTrend()) return;
+    const sessionId = this.session()?.sessionId;
+    if (!sessionId) return;
+
+    const key = `${sessionId}|${this.buffer.size}`;
+    if (!options.force && key === this.trendFetchedFor) return;
+    if (this.trendRequest) {
+      this.trendMoved = true;
+      return;
+    }
+
+    this.trendFetchedFor = key;
+    this.trendLoading.set(true);
+    this.trendRequest = this.api
+      .sessionTrend(sessionId, { timeframes: DEFAULT_TREND_TIMEFRAMES.join(',') })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (result) => {
+          this.trendRequest = null;
+          this.trendLoading.set(false);
+          this.trend.set(result);
+          this.trendError.set(null);
+          this.drawTrend();
+          this.trendFollowUp();
+        },
+        error: (e: ChartStreamError) => {
+          this.trendRequest = null;
+          this.trendLoading.set(false);
+          // Its own line: no trend is a chart without an annotation, not a
+          // chart whose bars are wrong.
+          this.trendError.set(`Trend unavailable — ${describe(e)}`);
+          this.trendFollowUp();
+        },
+      });
+  }
+
+  private trendFollowUp(): void {
+    if (!this.trendMoved) return;
+    this.trendMoved = false;
+    this.refreshTrend();
+  }
+
+  /**
+   * The focus timeframe's lines: its protected swing, a broken level while it
+   * is transitioning, a range's edges, the nearest support and resistance,
+   * and its trendline. Swings and events go through the shared marker plugin.
+   */
+  private drawTrend(): void {
+    const series = this.candles;
+    if (!series || !this.chart) return;
+
+    for (const line of this.trendPriceLines) series.removePriceLine(line);
+    this.trendPriceLines = [];
+
+    const focus = this.showTrend() ? this.focusedTrend() : null;
+    const knownAt = this.knownAtNow();
+    for (const line of trendLines(focus, knownAt, this.trendDetail())) {
+      this.trendPriceLines.push(
+        series.createPriceLine({
+          price: line.price,
+          color: line.color,
+          lineWidth: line.width,
+          lineStyle:
+            line.style === 'solid'
+              ? LineStyle.Solid
+              : line.style === 'dashed'
+                ? LineStyle.Dashed
+                : LineStyle.Dotted,
+          lineVisible: true,
+          axisLabelVisible: line.axisLabel,
+          title: line.title,
+          axisLabelColor: '',
+          axisLabelTextColor: '',
+        }),
+      );
+    }
+
+    // Trendlines: one two-point series each, reused by id, so a line that is
+    // still active only has its end moved as bars arrive.
+    const segments = trendlineSegments(
+      focus,
+      this.displaySeconds(),
+      knownAt,
+      this.trendDetail(),
+      this.chartAxis(),
+    );
+    const keep = new Set(segments.map((s) => s.id));
+    this.trendDrawnLines = keep;
+    for (const [id, line] of this.trendlineSeries) {
+      if (keep.has(id)) continue;
+      this.chart.removeSeries(line);
+      this.trendlineSeries.delete(id);
+    }
+    for (const segment of segments) {
+      const colour = segment.kind === 'RESISTANCE' ? THEME.down : THEME.up;
+      const options = {
+        color: fade(colour, segment.broken ? 0.55 : 0.9),
+        lineWidth: 2 as const,
+        lineStyle: segment.broken ? LineStyle.Dashed : LineStyle.Solid,
+      };
+      let line = this.trendlineSeries.get(segment.id);
+      if (line) line.applyOptions(options);
+      else {
+        line = this.chart.addSeries(LineSeries, {
+          ...options,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        this.trendlineSeries.set(segment.id, line);
+      }
+      line.setData(segment.points);
+    }
+
+    this.drawMarkers();
+  }
+
+  /** Bar positions of the drawn series, for lines drawn in bar space. */
+  private chartAxis(): ChartAxis | null {
+    const bars = this.drawn;
+    const first = bars[0];
+    const last = bars.at(-1);
+    if (!first || !last) return null;
+    return {
+      firstSec: first.time as number,
+      lastSec: last.time as number,
+      indexOf: (sec: number) => {
+        let lo = 0;
+        let hi = bars.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (((bars[mid] as Bar).time as number) <= sec) lo = mid;
+          else hi = mid - 1;
+        }
+        return lo;
+      },
+    };
+  }
+
+  /** Clean or detailed — only what is drawn changes, not what is fetched. */
+  protected setTrendDetail(detail: TrendDetail): void {
+    this.trendDetail.set(detail);
+    this.drawTrend();
+  }
+
+  private clearTrend(): void {
+    this.trendRequest?.unsubscribe();
+    this.trendRequest = null;
+    this.trendMoved = false;
+    this.trendFetchedFor = null;
+    this.trend.set(null);
+    this.trendError.set(null);
+    this.trendLoading.set(false);
+    this.drawTrend();
+  }
+
+  /** See {@link trendKnownAt}. */
+  private knownAtNow(): number | null {
+    if (this.playbackUntilMs() === null) return null;
+    const last = this.lastBarTime();
+    return last === null ? null : (last + this.displaySeconds()) * 1000;
+  }
+
+  /** The trend events on the hovered bar, explained for the hover card. */
+  readonly trendNotes = computed<MarkNote[]>(() => {
+    const bar = this.hovered();
+    if (!bar || !this.showTrend()) return [];
+    return eventNotesAtBar(
+      this.focusedTrend(),
+      this.displaySeconds(),
+      bar.time as number,
+      this.trendKnownAt(),
+    );
+  });
+
   private applyRetests(result: ChartRetests): void {
     this.retests.set(result.retests);
     this.retestsInterval = result.interval;
@@ -2607,6 +2940,15 @@ export class ChartStreamComponent {
         retests,
         engine,
         this.levelRejectionMarks(),
+        this.showTrend()
+          ? trendMarkers(
+              this.focusedTrend(),
+              this.displaySeconds(),
+              this.knownAtNow(),
+              this.trendDetail(),
+              this.trendDrawnLines,
+            )
+          : [],
       ),
       this.firstBarTime(),
       // Only while replaying. On a normal chart the newest drawn bar is the
@@ -2703,6 +3045,12 @@ export class ChartStreamComponent {
     // Its marks stop at the newest drawn bar, so a replay that grows must
     // re-publish them or the entry it has just reached stays hidden.
     if (this.showLevelRejection()) this.drawLevelRejection();
+    // Re-bucketed to the bars just drawn, clipped to a replay's cursor, and
+    // re-asked once per newly closed bar.
+    if (this.showTrend()) {
+      this.drawTrend();
+      this.refreshTrend();
+    }
   }
 
   /**
@@ -2961,6 +3309,7 @@ export class ChartStreamComponent {
       (this.showMarketEngine() ? 1 : 0) +
       (this.showPreviousDayRange() ? 1 : 0) +
       (this.showLevelRejection() ? 1 : 0) +
+      (this.showTrend() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0),
   );
@@ -2979,6 +3328,7 @@ export class ChartStreamComponent {
       this.marketEngineLoading() ||
       this.pdrLoading() ||
       this.levelRejectionLoading() ||
+      this.trendLoading() ||
       this.candlePatternsLoading(),
   );
 
@@ -2996,6 +3346,7 @@ export class ChartStreamComponent {
     if (this.showMarketEngine()) this.toggleMarketEngine();
     if (this.showPreviousDayRange()) this.togglePreviousDayRange();
     if (this.showLevelRejection()) this.toggleLevelRejection();
+    if (this.showTrend()) this.toggleTrend();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
   }
@@ -3507,7 +3858,7 @@ export class ChartStreamComponent {
     // is wider and taller, so it flips sooner and is pinned to the top of the
     // chart, where it has the most room to grow down.
     const width = this.chartHost().nativeElement.clientWidth;
-    const explained = this.engineNotes().length > 0;
+    const explained = this.engineNotes().length > 0 || this.trendNotes().length > 0;
     const cardWidth = explained ? 300 : 156;
     const flip = point.x > width - cardWidth - 14;
     this.tooltipAt.set({

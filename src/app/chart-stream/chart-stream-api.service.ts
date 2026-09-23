@@ -28,6 +28,7 @@ import type {
   SessionMarketEngineQuery,
   ValidationResult,
 } from '../market-engine/market-engine.models';
+import type { SessionTrendQuery, TrendRequest, TrendResult } from '../trend/trend.models';
 import type {
   LevelRejectionRequest,
   LevelRejectionResponse,
@@ -226,6 +227,30 @@ export class ChartStreamApiService {
       .get<MarketEngineResult>(`${this.base}/streamer/stream/${sessionId}/market-engine`, {
         params,
       })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The trend on every requested timeframe — direction, strength, phase,
+   * structure, breaks and reversals — with no session needed.
+   */
+  trend(request: TrendRequest): Observable<TrendResult> {
+    return this.http
+      .post<TrendResult>(`${this.base}/streamer/stream/trend`, request)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /**
+   * The same, over the bars **this session has published**, bounded by the
+   * session's own clock server-side — so a replay is read as of where it is.
+   */
+  sessionTrend(sessionId: string, query: SessionTrendQuery = {}): Observable<TrendResult> {
+    const params: Record<string, string> = {};
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null) params[key] = String(value);
+    }
+    return this.http
+      .get<TrendResult>(`${this.base}/streamer/stream/${sessionId}/trend`, { params })
       .pipe(catchError(this.unwrap));
   }
 
