@@ -8,6 +8,7 @@ import {
   inject,
   input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -331,7 +332,9 @@ export class BacktestChartComponent {
       if (!r || r.charts.length === 0) return;
       const withTrade = r.trades[0]?.instrumentKey;
       this.instrumentKey.set(withTrade ?? r.charts[0]!.instrumentKey);
-      this.day.set(this.days()[0]?.day ?? '');
+      // Untracked: reading the day list here would re-run this on every
+      // instrument change and snap the picker back to the first instrument.
+      this.day.set(untracked(() => this.days())[0]?.day ?? '');
       this.cursor.set(Number.MAX_SAFE_INTEGER);
     });
 
@@ -474,20 +477,21 @@ export class BacktestChartComponent {
       if (trade.entryAt > visibleUntil) continue;
       // A fill is stamped at its bar's close; the marker sits on that bar.
       const entryBar = toChartTime(trade.entryAt - 60_000);
+      const long = trade.side !== 'SELL';
       marks.push({
         time: entryBar,
-        position: 'belowBar',
-        color: THEME.up,
-        shape: 'arrowUp',
-        text: `BUY ${trade.lots}L @ ${price(trade.entryPrice)}`,
+        position: long ? 'belowBar' : 'aboveBar',
+        color: long ? THEME.up : THEME.down,
+        shape: long ? 'arrowUp' : 'arrowDown',
+        text: `${long ? 'BUY' : 'SELL'} ${trade.lots}L @ ${price(trade.entryPrice)}`,
       });
       const exitVisible = trade.exitAt !== null && trade.exitAt <= visibleUntil;
       if (exitVisible && trade.exitAt !== null) {
         marks.push({
           time: toChartTime(trade.exitAt - 60_000),
-          position: 'aboveBar',
+          position: long ? 'aboveBar' : 'belowBar',
           color: (trade.netPnl ?? 0) >= 0 ? THEME.up : THEME.down,
-          shape: 'arrowDown',
+          shape: long ? 'arrowDown' : 'arrowUp',
           text: `${signedMoney(trade.netPnl)} ${trade.exitReason ?? ''}`,
         });
       }

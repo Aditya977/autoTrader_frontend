@@ -218,8 +218,13 @@ export interface StrategyEntries {
   entries: {
     /** Open time of the signal candle, epoch ms. */
     barAt: number;
+    side: 'BUY' | 'SELL';
     entryPrice: number;
     stopLoss: number | null;
     reason: string;
+    /** Open time of the candle the engine exited on; `null` while still open. */
+    exitBarAt: number | null;
+    exitPrice: number | null;
+    exitReason: string | null;
   }[];
 }

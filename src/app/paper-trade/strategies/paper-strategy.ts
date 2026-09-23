@@ -136,6 +136,13 @@ export interface PaperStrategy {
   readonly needsRetests?: boolean;
 
   /**
+   * The backend strategy whose entries this one follows — the id the page
+   * asks `/strategy/signals/entries` for. Signals arrive tagged with it, and
+   * the strategy reads only those. Implies {@link needsRetests}.
+   */
+  readonly backendStrategyId?: string;
+
+  /**
    * Where inside its bar a fill is stamped, in milliseconds after the bar's
    * open. Defaults to `0` — the bar's own timestamp.
    *

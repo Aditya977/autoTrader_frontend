@@ -3,7 +3,7 @@
  * change to add one.
  *
  * The engine imports {@link paperStrategyById} and nothing else from this
- * folder, so a fourth strategy is: write the file, add the import, add the
+ * folder, so another strategy is: write the file, add the import, add the
  * entry. No engine change, no UI change — the picker renders whatever is in
  * this array.
  *
@@ -13,15 +13,36 @@
  * is the one whose behaviour needs no explaining.
  */
 
-import { emaRetestReclaimStrategy } from './ema-retest-reclaim.strategy';
-import { greenRetestHoldStrategy } from './green-retest-hold.strategy';
+import { backendSignalStrategy } from './backend-signal.strategy';
 import { manualStrategy } from './manual.strategy';
 import type { PaperStrategy } from './paper-strategy';
 
 export const PAPER_STRATEGIES: readonly PaperStrategy[] = [
   manualStrategy,
-  greenRetestHoldStrategy,
-  emaRetestReclaimStrategy,
+  // The dashboard's strategies, followed trade for trade from the backend.
+  backendSignalStrategy({
+    backendStrategyId: 'level-breakout',
+    name: 'Level Breakout (index, momentum)',
+    description:
+      'Follows the backend: a 5-minute index candle breaks a previous-day level (PDH, PDL, ' +
+      'PD50, the 13:15 hour) with momentum — ≥ 2.4 ATR beyond the 20 EMA — on a day with ' +
+      'range. Buys this option (CE up, PE down); exits when the index falls back through the ' +
+      'breakout candle, reaches 2R, or after 60 minutes.',
+  }),
+  backendSignalStrategy({
+    backendStrategyId: 'trend-structure',
+    name: 'Trend Structure',
+    description:
+      'Follows the backend: enters at the end of a pullback in the direction of the ' +
+      '15-minute trend, with the backend’s own stop and exit.',
+  }),
+  backendSignalStrategy({
+    backendStrategyId: 'liquidity-sweep',
+    name: 'Liquidity Sweep',
+    description:
+      'Follows the backend: trades a failed run on the previous session’s high or low, ' +
+      'with the backend’s own stop and exit.',
+  }),
 ];
 
 /** The default the setup form opens on. */

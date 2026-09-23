@@ -97,6 +97,9 @@ export class PaperTradeService {
   /** Instruments whose feed has finished — no further bar will ever arrive. */
   private readonly finished = new Set<string>();
 
+  /** Backend signals per instrument, per strategy that produced them. */
+  private readonly signalsBySource = new Map<string, Map<string, PaperRetestSignal[]>>();
+
   /**
    * The paced re-run currently on screen, if any.
    *
@@ -193,8 +196,36 @@ export class PaperTradeService {
    * same code the Trading Dashboard runs, so the chart cannot see ahead and
    * cannot disagree with the dashboard.
    */
-  setSignals(instrumentKey: string, signals: readonly PaperRetestSignal[]): void {
-    this.engine.setRetests(instrumentKey, signals);
+  setSignals(
+    instrumentKey: string,
+    source: string,
+    signals: readonly PaperRetestSignal[],
+  ): void {
+    // Several backend strategies can trade one instrument; each fetch replaces
+    // only its own source's signals, and the engine holds them all.
+    const bySource = this.signalsBySource.get(instrumentKey) ?? new Map();
+    bySource.set(
+      source,
+      signals.map((signal) => ({ ...signal, source })),
+    );
+    this.signalsBySource.set(instrumentKey, bySource);
+    this.engine.setRetests(instrumentKey, [...bySource.values()].flat());
+  }
+
+  /** Whether a backend source's signals have been fetched for an instrument. */
+  hasSignalsFrom(instrumentKey: string, source: string): boolean {
+    return this.signalsBySource.get(instrumentKey)?.has(source) ?? false;
+  }
+
+  /** Backend strategies an order or position on this instrument is following. */
+  signalSourcesFor(instrumentKey: string): string[] {
+    const sources = new Set<string>();
+    for (const p of this.live()) {
+      if (p.contract.instrumentKey !== instrumentKey) continue;
+      const id = paperStrategyById(p.strategyId)?.backendStrategyId;
+      if (id) sources.add(id);
+    }
+    return [...sources];
   }
 
   /** Whether an order or position on this instrument is waiting on retest signals. */
@@ -416,6 +447,7 @@ export class PaperTradeService {
     this.prices.set(new Map());
     this.bars.clear();
     this.finished.clear();
+    this.signalsBySource.clear();
     this.progress.set(0);
   }
 

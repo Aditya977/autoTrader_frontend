@@ -1404,14 +1404,15 @@ export class ChartStreamPageComponent {
   protected placePaperTrade(request: PaperOrderRequest): void {
     this.paperError.set(null);
 
-    // A signal strategy needs the overlay's retests in hand *before* the order
+    // A backend-driven strategy needs its signals in hand *before* the order
     // is placed: the engine re-runs the recorded session the moment it accepts
-    // one, and retests arriving a round trip later would miss every signal of
-    // the morning. Fetched once per contract and then reused.
+    // one, and signals arriving a round trip later would miss every entry of
+    // the morning. Fetched once per contract and strategy, then reused.
     const strategy = paperStrategyById(request.strategyId);
     const key = request.contract.instrumentKey;
-    if (strategy?.needsRetests && !this.paper.hasRetests(key)) {
-      this.loadRetestsThenPlace(request);
+    const source = strategy?.backendStrategyId ?? null;
+    if (source && !this.paper.hasSignalsFrom(key, source)) {
+      this.loadRetestsThenPlace(request, source);
       return;
     }
 
@@ -1439,7 +1440,7 @@ export class ChartStreamPageComponent {
    * construction. On a LIVE chart the list is refreshed as bars close — see
    * {@link refreshLiveSignals}.
    */
-  private loadRetestsThenPlace(request: PaperOrderRequest): void {
+  private loadRetestsThenPlace(request: PaperOrderRequest, source: string): void {
     const contract = request.contract;
     const panel = this.panels().find((p) => this.keyFor(p) === contract.instrumentKey);
     if (!panel) {
@@ -1448,7 +1449,7 @@ export class ChartStreamPageComponent {
     }
 
     this.paperError.set('Loading strategy signals…');
-    this.fetchSignals(panel, contract.instrumentKey, () => {
+    this.fetchSignals(panel, contract.instrumentKey, source, () => {
       this.paperError.set(null);
       this.commitPaperTrade(request);
     });
@@ -1465,16 +1466,24 @@ export class ChartStreamPageComponent {
    */
   private refreshLiveSignals(panel: ChartPanel, instrumentKey: string): void {
     if (panel.request.mode !== 'LIVE' || !this.paper.needsSignals(instrumentKey)) return;
-    const last = this.signalsFetchedAt.get(instrumentKey) ?? 0;
-    if (Date.now() - last < 55_000) return;
-    this.fetchSignals(panel, instrumentKey);
+    for (const source of this.paper.signalSourcesFor(instrumentKey)) {
+      const fetched = `${instrumentKey}|${source}`;
+      const last = this.signalsFetchedAt.get(fetched) ?? 0;
+      if (Date.now() - last < 55_000) continue;
+      this.fetchSignals(panel, instrumentKey, source);
+    }
   }
 
-  private fetchSignals(panel: ChartPanel, instrumentKey: string, then?: () => void): void {
-    this.signalsFetchedAt.set(instrumentKey, Date.now());
+  private fetchSignals(
+    panel: ChartPanel,
+    instrumentKey: string,
+    source: string,
+    then?: () => void,
+  ): void {
+    this.signalsFetchedAt.set(`${instrumentKey}|${source}`, Date.now());
     this.trading
       .entries({
-        strategyId: GREEN_RETEST_BACKEND_ID,
+        strategyId: source,
         instrument: panel.request.instrument,
         date: panel.request.date ?? todayKey(),
       })
@@ -1483,12 +1492,18 @@ export class ChartStreamPageComponent {
         next: (found) => {
           this.paper.setSignals(
             instrumentKey,
+            source,
             found.entries.map((entry) => ({
               atMs: entry.barAt,
-              bullish: true,
+              bullish: entry.side === 'BUY',
               quality: qualityOf(entry.reason),
               valid: true,
               scenario: 'confirmed',
+              side: entry.side,
+              stopLoss: entry.stopLoss,
+              exitAtMs: entry.exitBarAt,
+              exitReason: entry.exitReason,
+              reason: entry.reason,
             })),
           );
           then?.();
@@ -1937,9 +1952,6 @@ export class ChartStreamPageComponent {
     };
   }
 }
-
-/** The backend strategy the chart's Green Retest follows — the dashboard's. */
-const GREEN_RETEST_BACKEND_ID = 'two-candle-retest';
 
 /** The detector's quality, read back out of the entry reason; 1 when absent. */
 function qualityOf(reason: string): number {

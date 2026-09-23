@@ -258,6 +258,22 @@ export interface PaperRetestSignal {
   valid: boolean;
   /** The shape the backend classified it as — `exact`, `sweep`, … */
   scenario: string;
+  /**
+   * The backend strategy that produced this signal, when it came from one.
+   * Signals from several strategies can sit on the same instrument, and each
+   * paper strategy reads only its own.
+   */
+  source?: string;
+  /** The side the backend entered on. Absent for overlay retests. */
+  side?: PaperSide;
+  /** The backend's stop for this entry; `null` when it has none. */
+  stopLoss?: number | null;
+  /** Bar open time of the candle the backend exited on; `null` while still open. */
+  exitAtMs?: number | null;
+  /** Why the backend exited, shown in the activity feed. */
+  exitReason?: string | null;
+  /** The backend's entry reason, verbatim. */
+  reason?: string;
 }
 
 /** What the setup form hands the engine when the button is pressed. */

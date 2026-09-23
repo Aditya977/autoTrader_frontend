@@ -49,14 +49,26 @@ function bar(minute: number, close: number, extra: Partial<PaperMarketUpdate> = 
   } satisfies PaperMarketUpdate;
 }
 
-/** A green retest on the bar `minute` minutes after the open. */
-function greenAt(minute: number) {
+/** The backend-driven strategy these tests use when they need a signal-driven one. */
+const SIGNAL_STRATEGY = 'backend:level-breakout';
+
+/**
+ * A backend Level Breakout entry on the bar `minute` minutes after the open,
+ * exiting two bars later — no stop, no target, so only its exit ends it.
+ */
+function signalAt(minute: number) {
   return {
     atMs: OPEN_MS + minute * 60_000,
     bullish: true,
-    quality: 0.8,
+    quality: 1,
     valid: true,
-    scenario: 'exact',
+    scenario: 'confirmed',
+    source: 'level-breakout',
+    side: 'BUY' as const,
+    stopLoss: null,
+    exitAtMs: OPEN_MS + (minute + 2) * 60_000,
+    exitReason: 'held 60 minutes',
+    reason: 'index broke above PDH',
   };
 }
 
@@ -158,12 +170,12 @@ describe('PaperTradeEngine exits', () => {
   });
 
   it('closes on the strategy signal when neither level was touched', () => {
-    // The green-retest hold sets no stop and no target, so its exit is the
+    // The backend-driven entry here sets no stop and no target, so its exit is the
     // only thing that can end the trade — which is exactly the branch under
     // test here.
     const engine = new PaperTradeEngine();
-    engine.setRetests(KEY, [greenAt(1)]);
-    engine.place(order({ strategyId: 'green-retest-candles' }));
+    engine.setRetests(KEY, [signalAt(1)]);
+    engine.place(order({ strategyId: SIGNAL_STRATEGY }));
 
     engine.replay([bar(0, 100), bar(1, 100)]);
     expect(engine.snapshot().positions[0]!.status).toBe('ACTIVE');
@@ -190,10 +202,10 @@ describe('PaperTradeEngine exits', () => {
     expect(closed.exitPrice).toBe(118);
 
     // An unfilled order is cancelled, not "exited at a loss" — nothing was held.
-    // The green-retest strategy with no signal supplied never fills, which is
+    // A signal-driven strategy with no signal supplied never fills, which is
     // the cheapest way to get an order stuck in CREATED.
     const second = new PaperTradeEngine();
-    second.place(order({ strategyId: 'green-retest-candles' }));
+    second.place(order({ strategyId: SIGNAL_STRATEGY }));
     const id = only(second).id;
     second.closeManually(id);
     expect(only(second).status).toBe('EXITED');
@@ -517,7 +529,7 @@ describe('PaperTradeEngine declining to enter', () => {
   it('waits in CREATED, quietly, while the strategy has no signal', () => {
     const engine = new PaperTradeEngine();
     // No retests supplied, so the strategy declines every bar.
-    engine.place(order({ strategyId: 'green-retest-candles' }));
+    engine.place(order({ strategyId: SIGNAL_STRATEGY }));
 
     for (let i = 0; i < 10; i++) engine.onUpdate(bar(i, 100 + i));
 
