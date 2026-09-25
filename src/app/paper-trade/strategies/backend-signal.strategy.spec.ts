@@ -78,11 +78,7 @@ function entry(
 
 describe('backend-driven paper strategies', () => {
   it('are registered for every dashboard strategy, each naming its backend id', () => {
-    for (const id of [
-      'level-breakout',
-      'trend-structure',
-      'liquidity-sweep',
-    ]) {
+    for (const id of ['level-breakout', 'trend-structure']) {
       const strategy = paperStrategyById(`backend:${id}`);
       expect(strategy).not.toBeNull();
       expect(strategy!.backendStrategyId).toBe(id);

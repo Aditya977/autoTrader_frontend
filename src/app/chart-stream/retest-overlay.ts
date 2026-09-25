@@ -182,6 +182,23 @@ export function mergeMarkers(
 }
 
 /**
+ * Keeps only the markers inside the drawn bars — from `firstBarTime`, and up to
+ * `lastBarTime` when clipping a replay's right edge. A marker with no bar of its
+ * own would otherwise be pinned to the nearest one by the chart.
+ */
+export function withinSeries<T extends { time: UTCTimestamp }>(
+  markers: readonly T[],
+  firstBarTime: number | null,
+  lastBarTime: number | null = null,
+): T[] {
+  return markers.filter(
+    (m) =>
+      (firstBarTime === null || (m.time as number) >= firstBarTime) &&
+      (lastBarTime === null || (m.time as number) <= lastBarTime),
+  );
+}
+
+/**
  * Epoch ms → the epoch-seconds time of the bar it falls in.
  *
  * No `- 1` here, unlike `trade-markers.ts`: a trade carries the *close* time of

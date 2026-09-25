@@ -54,14 +54,6 @@ import { PatternTimeframeTableComponent } from '../chart-patterns/ui/pattern-tim
 import { EMA_INDICATORS, ema, emaColor } from '../chart-indicators/ema';
 import { VWAP_COLOR, vwapLine } from '../chart-indicators/vwap';
 import {
-  PDR_COLOR,
-  PDR_LINES,
-  PDR_LINE_TYPE,
-  PDR_STYLE,
-  previousDayRangeLines,
-  type PdrLine,
-} from '../chart-indicators/previous-day-range';
-import {
   CandleSeriesBuffer,
   toCandlestickData,
   toVolumeData,
@@ -86,7 +78,6 @@ import {
   type ChartRetest,
   type ChartRetests,
   type ChartSessionSnapshot,
-  type PreviousDayRange,
   type SessionLevelsQuery,
   type SessionRetestsQuery,
   type StartStreamRequest,
@@ -100,36 +91,21 @@ import {
   describeRetest,
   mergeMarkers,
   retestMarkers,
+  withinSeries,
 } from './retest-overlay';
-import { MarketEnginePanelComponent } from '../market-engine/market-engine-panel.component';
 import {
   OverlayMenuComponent,
   countLabel,
   type OverlayChip,
   type OverlayGroup,
 } from './overlay-menu.component';
-import {
-  marketStateMarkers,
-  marksAtBar,
-  protectedLines,
-  withinSeries,
-  zoneLines,
-} from '../market-engine/market-engine-overlay';
-import { explainMark, type MarkNote } from '../market-engine/market-engine-glossary';
-import type {
-  ChartSet,
-  EventLogIngestResult,
-  MarketEngineResearchRequest,
-  MarketEngineResult,
-  ParityCheckResult,
-  SessionMarketEngineQuery,
-  ValidationResult,
-} from '../market-engine/market-engine.models';
 import type { SimTrade } from '../strategy/strategy.models';
 import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overlay';
 import type { PaperPosition } from '../paper-trade/paper-trade.models';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
+import { vwapEmaMarkers } from '../vwap-ema/vwap-ema-overlay';
+import type { VwapEmaResponse } from '../vwap-ema/vwap-ema.models';
 import { TrendPanelComponent } from '../trend/trend-panel.component';
 import {
   DIRECTION_LABELS,
@@ -140,6 +116,7 @@ import {
   trendMarkers,
   trendlineSegments,
   type ChartAxis,
+  type MarkNote,
   type TrendDetail,
 } from '../trend/trend-overlay';
 import {
@@ -211,7 +188,6 @@ interface Readout {
   imports: [
     PatternTimeframeTableComponent,
     CandlePatternListComponent,
-    MarketEnginePanelComponent,
     TrendPanelComponent,
     OverlayMenuComponent,
   ],
@@ -444,20 +420,6 @@ interface Readout {
       }
 
       /**
-      @if (previousDayBand(); as pdr) {
-        <div class="levels pdr-band">
-          <span class="tag">PDR</span>
-          <span class="lvl pdh">PDH {{ formatBand(pdr.pdh) }}</span>
-          <span class="lvl mid">Mid {{ formatBand(pdr.mid) }}</span>
-          <span class="lvl pdl">PDL {{ formatBand(pdr.pdl) }}</span>
-          <span class="meta">
-            from {{ pdr.previousTradingDate }}
-            @if (pdr.days > 1) {
-              · {{ pdr.days }} days annotated
-            }
-          </span>
-        </div>
-      }
 
       @if (candleBand(); as cs) {
         <div class="levels candle-band">
@@ -489,10 +451,6 @@ interface Readout {
         <p class="error">{{ message }}</p>
       }
 
-      @if (pdrError(); as message) {
-        <p class="error">{{ message }}</p>
-      }
-
       @if (levelsError(); as message) {
         <p class="error">{{ message }}</p>
       }
@@ -506,28 +464,7 @@ interface Readout {
         menu: the menu is for switching things on, and this is several lines of
         prose a person reads while looking at the candles.
       -->
-      @if (showMarketEngine()) {
-        <div class="engine-wrap">
-          <app-market-engine-panel
-            [result]="marketEngine()"
-            [ingestResult]="engineIngest()"
-            [parityResult]="engineParity()"
-            [validationResult]="engineValidation()"
-            [researchBusy]="engineResearchBusy()"
-            [researchError]="engineResearchError()"
-            (chartSetChange)="setChartSet($event)"
-            (ingest)="storeEngineEvents()"
-            (parity)="checkEngineParity()"
-            (validate)="runEngineValidation()"
-          />
-        </div>
-      }
-
-      @if (marketEngineError(); as message) {
-        <p class="error">{{ message }}</p>
-      }
-
-      <!-- Every timeframe's trend, below the chart like the engine's read-out. -->
+      <!-- Every timeframe's trend, below the chart. -->
       @if (showTrend()) {
         <div class="engine-wrap">
           <app-trend-panel
@@ -547,6 +484,10 @@ interface Readout {
       }
 
       @if (levelRejectionError(); as message) {
+        <p class="error">{{ message }}</p>
+      }
+
+      @if (vwapEmaError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -587,15 +528,6 @@ interface Readout {
                 <dd>{{ t.readout.volume }}</dd>
               </div>
             </dl>
-            <!-- What the engine mark on this candle means, so a label is never a riddle. -->
-            @for (note of engineNotes(); track $index) {
-              <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
-                <div class="t-note-title">{{ note.up ? '↑' : '↓' }} {{ note.title }}</div>
-                @for (line of note.lines; track $index) {
-                  <p>{{ line }}</p>
-                }
-              </div>
-            }
             <!-- The trend events on this candle — breaks, false breaks, reversals. -->
             @for (note of trendNotes(); track $index) {
               <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
@@ -836,18 +768,6 @@ interface Readout {
        the rest of the band uses rather than borrowing the error colour. */
     .candle-band .meta.none {
       font-style: italic;
-    }
-
-    .pdr-band .lvl.pdh,
-    .pdr-band .lvl.pdl,
-    .pdr-band .lvl.mid {
-      color: #c3d94e;
-    }
-
-    /* The midpoint is derived rather than observed, and reads as secondary
-       here for the same reason its line is drawn thinner. */
-    .pdr-band .lvl.mid {
-      opacity: 0.75;
     }
 
     /* The indicators menu is positioned against this, so the button and the
@@ -1269,30 +1189,6 @@ export class ChartStreamComponent {
   private volume?: ISeriesApi<'Histogram'>;
   /** v5 moved markers out of the series and into a plugin attached to it. */
   private markers?: ISeriesMarkersPluginApi<Time>;
-  /* --- previous day range -------------------------------------------- */
-  /** Whether PDH/PDL/mid are drawn. Persisted, like the other toggles. */
-  readonly showPreviousDayRange = signal(false);
-  /**
-   * One range per trading day the chart can show, newest last.
-   *
-   * Held rather than recomputed because it cannot change: every value comes
-   * from a session that has already closed. Fetched once per instrument/date
-   * and then only redrawn — which is what "static across the session" means in
-   * practice, and why no amount of streaming can move these lines.
-   */
-  readonly previousDayRanges = signal<PreviousDayRange[]>([]);
-  readonly pdrLoading = signal(false);
-  readonly pdrError = signal<string | null>(null);
-  /**
-   * The instrument and date the held ranges belong to.
-   *
-   * The guard against the one way this overlay can lie: turning it off, moving
-   * the panel to another instrument, and turning it back on would otherwise
-   * redraw the previous instrument's levels over the new one's bars.
-   */
-  private pdrFetchedFor: string | null = null;
-  private readonly pdrSeries = new Map<PdrLine, ISeriesApi<'Line'>>();
-
   private readonly buffer = new CandleSeriesBuffer();
 
   /**
@@ -1413,16 +1309,6 @@ export class ChartStreamComponent {
           toggle: () => this.toggleLevels(),
           note: () => (this.levelsLoading() ? '…' : countLabel(this.levels().length, 'level')),
         },
-        {
-          id: 'pdr',
-          name: 'Previous day range',
-          hint: "Yesterday's high, low and midpoint",
-          swatch: 'pdr',
-          blocked: () => this.needsInstrument(),
-          on: () => this.showPreviousDayRange(),
-          toggle: () => this.togglePreviousDayRange(),
-          note: () => (this.pdrLoading() ? '…' : null),
-        },
       ],
     },
     {
@@ -1453,17 +1339,17 @@ export class ChartStreamComponent {
           },
         },
         {
-          id: 'market-engine',
-          name: 'Market engine',
-          hint: 'Trend state across five timeframes, read-out below the chart',
-          swatch: 'mte',
-          blocked: () => this.needsSession(),
-          on: () => this.showMarketEngine(),
-          toggle: () => this.toggleMarketEngine(),
+          id: 'vwap-ema',
+          name: 'VWAP + 21 EMA',
+          hint: 'Bias (VWAP · 21 EMA) → pullback rejection candle → break → entry',
+          swatch: 'vwe',
+          blocked: () => this.needsInstrument(),
+          on: () => this.showVwapEma(),
+          toggle: () => this.toggleVwapEma(),
           note: () => {
-            if (this.marketEngineLoading()) return '…';
-            const engine = this.marketEngine();
-            return engine ? countLabel(engine.readings.length, 'reading') : null;
+            if (this.vwapEmaLoading()) return '…';
+            const result = this.vwapEma();
+            return result ? countLabel(result.result.funnel.entries, 'entry', 'entries') : null;
           },
         },
         {
@@ -1620,38 +1506,6 @@ export class ChartStreamComponent {
   readonly retestsLoading = signal(false);
   readonly retestsError = signal<string | null>(null);
 
-  /**
-   * The multi-timeframe engine's readings.
-   *
-   * Unlike the levels and the retests these are **not** interval-bound: the
-   * engine reads five timeframes by definition, and which five is `chartSet`,
-   * not the bar size on screen. So switching the chart from 1m to 15m does not
-   * invalidate them — it only changes which bar each mark has to be snapped to.
-   * That is the whole reason `refreshMarketEngine` is not called from the
-   * interval effect, where the other two are.
-   */
-  readonly marketEngine = signal<MarketEngineResult | null>(null);
-  readonly showMarketEngine = signal(false);
-  readonly marketEngineLoading = signal(false);
-  readonly marketEngineError = signal<string | null>(null);
-  /**
-   * Which bar sizes fill the cascade: `standard` is 4H/1H, `nse` is 125m/75m.
-   *
-   * Kept here rather than inside the panel because it is a *request* parameter
-   * — changing it re-asks the backend — and a control whose effect is a fetch
-   * belongs next to the fetch.
-   */
-  readonly chartSet = signal<ChartSet>('standard');
-
-  /* Research results — the event log, replay parity and validation. */
-  readonly engineIngest = signal<EventLogIngestResult | null>(null);
-  readonly engineParity = signal<ParityCheckResult | null>(null);
-  readonly engineValidation = signal<ValidationResult | null>(null);
-  readonly engineResearchBusy = signal(false);
-  readonly engineResearchError = signal<string | null>(null);
-  /** Protected-level lines, kept apart from the S/R lines so either can clear alone. */
-  private engineLines: IPriceLine[] = [];
-
   /* --- level rejection ------------------------------------------------ */
   /**
    * The previous-day level rejection overlay: levels, 5M rejections, 1M
@@ -1666,6 +1520,19 @@ export class ChartStreamComponent {
   readonly levelRejectionLoading = signal(false);
   readonly levelRejectionError = signal<string | null>(null);
   private levelRejectionLines: IPriceLine[] = [];
+
+  /* --- vwap-ema ------------------------------------------------------- */
+  /**
+   * The 1-minute VWAP + 21 EMA trend-pullback sequence over the days on screen.
+   *
+   * Session-independent like the level rejection, and drawn the same way — but
+   * markers only: the VWAP and 21 EMA it reads are the chart's own indicators,
+   * so this adds just each setup's rejection candle, entry, 1R partial and exit.
+   */
+  readonly showVwapEma = signal(false);
+  readonly vwapEma = signal<VwapEmaResponse | null>(null);
+  readonly vwapEmaLoading = signal(false);
+  readonly vwapEmaError = signal<string | null>(null);
 
   /* --- trend ---------------------------------------------------------- */
   /**
@@ -1833,21 +1700,6 @@ export class ChartStreamComponent {
       unresolved: retests.filter((retest) => retest.unresolved).length,
       interval: this.intervalLabel(),
     };
-  });
-
-  /**
-   * The numbers the PDR bar shows: the newest day's range.
-   *
-   * The newest rather than all of them, for the same reason the S/R bar shows
-   * only the pair around price — the older days are already drawn *on* the
-   * chart, above their own bars, which is where a level belongs. What a header
-   * adds is the one set that applies to the session being watched now.
-   */
-  readonly previousDayBand = computed(() => {
-    const ranges = this.previousDayRanges();
-    const newest = ranges.at(-1);
-    if (!this.showPreviousDayRange() || !newest) return null;
-    return { ...newest, days: ranges.length };
   });
 
   constructor() {
@@ -2026,7 +1878,6 @@ export class ChartStreamComponent {
 
     this.destroyRef.onDestroy(() => {
       this.emaSeries.clear();
-      this.pdrSeries.clear();
       this.trendlineSeries.clear();
       this.vwapSeries = undefined;
       this.overlay.destroy();
@@ -2106,29 +1957,18 @@ export class ChartStreamComponent {
     // And the candlestick boxes, for the same reason: they describe the bars
     // of the series that produced them.
     this.clearCandlePatterns();
-    // Same for the previous-day levels, which are per instrument *and* per
-    // date — see `pdrKey`.
-    this.clearPreviousDayRange();
-    // The overlay switches itself off for a new session rather than carrying
-    // over: it is enabled by a click and fetches when enabled, so carrying it
-    // across would annotate an instrument nobody asked about.
-    this.showPreviousDayRange.set(false);
-    this.removePdrSeries();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
     this.showLevels.set(request?.levels !== undefined);
     // Never on by default: a retest is a completed label over history, not
     // something a chart needs the moment it opens.
     this.showRetests.set(false);
-    // Same for the engine, and its readings belong to the instrument and date
-    // that produced them — carrying them into a new session would describe one
-    // chart over another. The chart set survives, because it is a preference
-    // about how to read rather than a fact about this session.
-    this.showMarketEngine.set(false);
-    this.clearMarketEngine();
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
+    // The same for the VWAP + EMA setups.
+    this.showVwapEma.set(false);
+    this.clearVwapEma();
     // The trend belongs to the instrument that produced it; the focus pick is
     // about how that chart was being read.
     this.showTrend.set(false);
@@ -2371,222 +2211,6 @@ export class ChartStreamComponent {
           this.retestsError.set(`Retests unavailable — ${describe(e)}`);
         },
       });
-  }
-
-  /**
-   * Shows or hides the multi-timeframe engine.
-   *
-   * Same economy as {@link toggleLevels} and {@link toggleRetests}: turning it
-   * on fetches only when nothing is held, so toggling twice costs one request,
-   * and turning it off keeps the last reading for an instant re-show.
-   *
-   * No interval check, unlike the retests. A reading is not bound to the bar
-   * size on screen — see {@link marketEngine} — so what is held stays valid
-   * when the chart switches timeframe.
-   */
-  toggleMarketEngine(): void {
-    const next = !this.showMarketEngine();
-    this.showMarketEngine.set(next);
-    if (!next) {
-      this.drawMarketEngine();
-      return;
-    }
-    if (this.marketEngine()) this.drawMarketEngine();
-    else this.refreshMarketEngine();
-  }
-
-  /**
-   * Switches the cascade between 4H/1H and 125m/75m.
-   *
-   * Always a refetch, even when the engine is showing nothing: the chart set
-   * decides which bars the context and structure layers are built from, so the
-   * held reading describes a different pair of timeframes and cannot be reused.
-   */
-  protected setChartSet(chartSet: ChartSet): void {
-    if (this.chartSet() === chartSet) return;
-    this.chartSet.set(chartSet);
-    this.marketEngine.set(null);
-    if (this.showMarketEngine()) this.refreshMarketEngine();
-  }
-
-  /**
-   * Asks the session for the engine's reading of the bars it has published.
-   *
-   * The session endpoint rather than the standalone one, and here the reason is
-   * sharper than it is for levels or retests: the session's own clock is what
-   * bounds the reading. A `TEST` replay part-way through a day must be read as
-   * of that moment, and the standalone endpoint — which knows only a date —
-   * would hand back the whole day, afternoon included.
-   */
-  private refreshMarketEngine(): void {
-    const sessionId = this.session()?.sessionId;
-    if (!sessionId) return;
-
-    this.marketEngineError.set(null);
-    this.marketEngineLoading.set(true);
-    this.api
-      .sessionMarketEngine(sessionId, {
-        chartSet: this.chartSet(),
-        roundNumberStep: this.roundNumberStep(),
-      } satisfies SessionMarketEngineQuery)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (result) => {
-          this.marketEngineLoading.set(false);
-          this.marketEngine.set(result);
-          this.marketEngineError.set(null);
-          this.drawMarketEngine();
-        },
-        error: (e: ChartStreamError) => {
-          this.marketEngineLoading.set(false);
-          // Its own line, like the other two: no reading is a chart without
-          // annotations, not a chart whose bars are wrong.
-          this.marketEngineError.set(`Market engine unavailable — ${describe(e)}`);
-        },
-      });
-  }
-
-  /**
-   * The round-number step the engine should place reference levels on.
-   *
-   * 100 for BANKNIFTY, 50 otherwise. Derived from the request rather than
-   * configured, because there is exactly one right answer per instrument and
-   * asking the user for it would be asking them to know the backend's
-   * confluence rule.
-   */
-  private roundNumberStep(): number {
-    return this.request()?.instrument.underlying === 'BANKNIFTY' ? 100 : 50;
-  }
-
-  private clearMarketEngine(): void {
-    this.marketEngine.set(null);
-    this.marketEngineError.set(null);
-    // Research results belong to the instrument and date that produced them,
-    // exactly like the readings.
-    this.engineIngest.set(null);
-    this.engineParity.set(null);
-    this.engineValidation.set(null);
-    this.engineResearchError.set(null);
-    this.drawMarketEngine();
-  }
-
-  /**
-   * The body every research endpoint takes, built from the chart's own request.
-   *
-   * `null` without a request, because the research actions are about the
-   * instrument and date on screen and there is nothing sensible to default to.
-   */
-  private researchRequest(): (MarketEngineResearchRequest & { date?: string }) | null {
-    const request = this.request();
-    if (!request) return null;
-    return {
-      instrument: request.instrument,
-      date: request.date,
-      chartSet: this.chartSet(),
-      roundNumberStep: this.roundNumberStep(),
-    };
-  }
-
-  /** Appends this instrument's engine events to the stored log. */
-  protected storeEngineEvents(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    this.runResearch(this.api.ingestEngineEvents(body), (result) => this.engineIngest.set(result));
-  }
-
-  /**
-   * Replays the chart's session and diffs it against the stored log.
-   *
-   * Needs a date: parity is about one session. On a LIVE chart there is none on
-   * the request, so today is used — the session actually being drawn.
-   */
-  protected checkEngineParity(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    const date = body.date ?? new Date().toISOString().slice(0, 10);
-    this.runResearch(this.api.checkEngineParity({ ...body, date }), (result) =>
-      this.engineParity.set(result),
-    );
-  }
-
-  /** Forward behaviour of every label, over the longest window the backend allows. */
-  protected runEngineValidation(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    this.runResearch(this.api.validateEngine(body), (result) => this.engineValidation.set(result));
-  }
-
-  /** One busy flag and one error line for all three actions. */
-  private runResearch<T>(source: Observable<T>, apply: (result: T) => void): void {
-    this.engineResearchError.set(null);
-    this.engineResearchBusy.set(true);
-    source.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: (result) => {
-        this.engineResearchBusy.set(false);
-        apply(result);
-      },
-      error: (e: ChartStreamError) => {
-        this.engineResearchBusy.set(false);
-        this.engineResearchError.set(describe(e));
-      },
-    });
-  }
-
-  /**
-   * Puts the engine's protected levels on the chart and republishes the marks.
-   *
-   * Protected levels are lines rather than marks because the *price* is the
-   * whole point of one — a mark cannot say a price — and there are at most
-   * three, which stays legible. Everything else the engine says is a mark or
-   * lives in the panel.
-   */
-  private drawMarketEngine(): void {
-    const series = this.candles;
-    if (!series) return;
-
-    for (const line of this.engineLines) series.removePriceLine(line);
-    this.engineLines = [];
-
-    if (this.showMarketEngine()) {
-      const latest = this.marketEngine()?.readings.at(-1) ?? null;
-      for (const line of protectedLines(latest)) {
-        this.engineLines.push(
-          series.createPriceLine({
-            price: line.price,
-            color: fade(line.bullish ? THEME.up : THEME.down, 0.75),
-            lineWidth: 2,
-            lineStyle: LineStyle.Solid,
-            lineVisible: true,
-            axisLabelVisible: true,
-            title: line.title,
-            axisLabelColor: '',
-            axisLabelTextColor: '',
-          }),
-        );
-      }
-
-      // Zone edges: thin, dotted and unlabelled on the axis, so they never
-      // compete with the protected levels for the price scale.
-      for (const edge of zoneLines(latest)) {
-        this.engineLines.push(
-          series.createPriceLine({
-            price: edge.price,
-            color: fade(edge.bullish ? THEME.up : THEME.down, edge.spent ? 0.25 : 0.5),
-            lineWidth: 1,
-            lineStyle: LineStyle.Dotted,
-            lineVisible: true,
-            axisLabelVisible: false,
-            title: edge.title,
-            axisLabelColor: '',
-            axisLabelTextColor: '',
-          }),
-        );
-      }
-    }
-
-    // The engine shares the one marker plugin with trades and retests, so
-    // either changing means re-publishing all three.
-    this.drawMarkers();
   }
 
   /**
@@ -2923,13 +2547,9 @@ export class ChartStreamComponent {
   chartMarkers(): SeriesMarker<UTCTimestamp>[] {
     const seconds = this.displaySeconds();
     const retests = this.showRetests() ? retestMarkers(this.retests(), seconds) : [];
-    const engine =
-      this.showMarketEngine() && this.marketEngine()
-        ? marketStateMarkers(this.marketEngine()?.readings ?? [], seconds)
-        : [];
     // Clipped to the drawn bars: a mark with no bar of its own is pinned to the
-    // nearest one by the chart, which stacked ten days of engine history on the
-    // first candle.
+    // nearest one by the chart, which stacked ten days of history on the first
+    // candle.
     return withinSeries(
       mergeMarkers(
         markersFor(this.trades(), seconds),
@@ -2938,8 +2558,8 @@ export class ChartStreamComponent {
         // running both must be able to tell which arrow was theirs.
         paperMarkers(this.paperPositions(), seconds),
         retests,
-        engine,
         this.levelRejectionMarks(),
+        this.vwapEmaMarks(),
         this.showTrend()
           ? trendMarkers(
               this.focusedTrend(),
@@ -2957,17 +2577,6 @@ export class ChartStreamComponent {
       this.playbackUntilMs() === null ? null : this.lastBarTime(),
     );
   }
-
-  /**
-   * The engine marks on the hovered bar, explained — what the hover card adds
-   * beneath the prices. Empty when the engine is off or the bar carries no mark.
-   */
-  readonly engineNotes = computed<MarkNote[]>(() => {
-    const bar = this.hovered();
-    const engine = this.marketEngine();
-    if (!bar || !engine || !this.showMarketEngine()) return [];
-    return marksAtBar(engine.readings, this.displaySeconds(), bar.time as number).map(explainMark);
-  });
 
   /** The backend's name for the bar size on screen. */
   private intervalName(): ChartInterval {
@@ -3041,7 +2650,6 @@ export class ChartStreamComponent {
     this.refreshCandlePatterns();
     this.drawEmas();
     this.drawVwap();
-    this.drawPreviousDayRange();
     // Its marks stop at the newest drawn bar, so a replay that grows must
     // re-publish them or the entry it has just reached stays hidden.
     if (this.showLevelRejection()) this.drawLevelRejection();
@@ -3306,9 +2914,8 @@ export class ChartStreamComponent {
     () =>
       (this.showLevels() ? 1 : 0) +
       (this.showRetests() ? 1 : 0) +
-      (this.showMarketEngine() ? 1 : 0) +
-      (this.showPreviousDayRange() ? 1 : 0) +
       (this.showLevelRejection() ? 1 : 0) +
+      (this.showVwapEma() ? 1 : 0) +
       (this.showTrend() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0),
@@ -3325,9 +2932,8 @@ export class ChartStreamComponent {
     () =>
       this.levelsLoading() ||
       this.retestsLoading() ||
-      this.marketEngineLoading() ||
-      this.pdrLoading() ||
       this.levelRejectionLoading() ||
+      this.vwapEmaLoading() ||
       this.trendLoading() ||
       this.candlePatternsLoading(),
   );
@@ -3343,9 +2949,8 @@ export class ChartStreamComponent {
   protected clearOverlays(): void {
     if (this.showLevels()) this.toggleLevels();
     if (this.showRetests()) this.toggleRetests();
-    if (this.showMarketEngine()) this.toggleMarketEngine();
-    if (this.showPreviousDayRange()) this.togglePreviousDayRange();
     if (this.showLevelRejection()) this.toggleLevelRejection();
+    if (this.showVwapEma()) this.toggleVwapEma();
     if (this.showTrend()) this.toggleTrend();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
@@ -3633,136 +3238,61 @@ export class ChartStreamComponent {
     return levelRejectionMarkers(result.result.setups, seconds, (last + seconds) * 1000);
   }
 
-  togglePreviousDayRange(): void {
-    const next = !this.showPreviousDayRange();
-    this.showPreviousDayRange.set(next);
-
-    if (!next) {
-      this.removePdrSeries();
-      return;
+  /**
+   * Toggles the VWAP + 21 EMA overlay, fetching its setups the first time — one
+   * request over the days the chart is showing, on the default rules. Off, it
+   * keeps the result for an instant re-show, like the level rejection.
+   */
+  toggleVwapEma(): void {
+    const next = !this.showVwapEma();
+    this.showVwapEma.set(next);
+    if (next && !this.vwapEma() && !this.vwapEmaLoading()) {
+      this.fetchVwapEma();
     }
-
-    this.addPdrSeries();
-    if (this.pdrFetchedFor === this.pdrKey()) this.drawPreviousDayRange();
-    else this.fetchPreviousDayRange();
+    // Markers only — the shared publisher picks them up.
+    this.drawMarkers();
   }
 
-  /**
-   * What a held set of ranges belongs to.
-   *
-   * The date is part of it, not only the instrument: the same option replayed
-   * on two different days has two different previous days, and a key that
-   * ignored the date would reuse the first day's levels on the second.
-   */
-  private pdrKey(): string | null {
+  /** Asks for the setups over the days the chart is showing, on the default rules. */
+  private fetchVwapEma(): void {
     const request = this.request();
-    if (!request) return null;
-    const { type, underlying, strike, expiry } = request.instrument;
-    return [type, underlying, strike ?? '', expiry ?? '', request.date ?? 'live'].join('|');
-  }
-
-  /**
-   * Asks the backend for one range per trading day this chart can show.
-   *
-   * `historyDays + 1` because the session's own day needs a range too, and the
-   * prior days drawn behind it each need their own — a multi-day chart where
-   * only the newest session is annotated is the bug this argument exists to
-   * avoid.
-   */
-  private fetchPreviousDayRange(): void {
-    const request = this.request();
-    const key = this.pdrKey();
-    if (!request || key === null) return;
-
-    this.pdrError.set(null);
-    this.pdrLoading.set(true);
+    const window = this.chartWindow();
+    if (!request || !window) return;
+    this.vwapEmaError.set(null);
+    this.vwapEmaLoading.set(true);
     this.api
-      .previousDayRange({
+      .vwapEma({
         instrument: request.instrument,
-        // Omitted for LIVE, where the backend's "today" is the right anchor
-        // and the browser's clock is not necessarily the exchange's.
-        ...(request.date === undefined ? {} : { date: request.date }),
-        lookbackDays: (request.historyDays ?? 0) + 1,
+        from: window.from,
+        to: window.to,
       })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (result) => {
-          this.pdrLoading.set(false);
-          this.pdrFetchedFor = key;
-          this.previousDayRanges.set(result.ranges);
-          this.drawPreviousDayRange();
+          this.vwapEmaLoading.set(false);
+          this.vwapEma.set(result);
+          this.drawMarkers();
         },
         error: (e: ChartStreamError) => {
-          this.pdrLoading.set(false);
-          // Its own line rather than `error`: no previous-day lines is a
-          // chart without an annotation, not a chart that is wrong about
-          // its bars. No fallback is attempted — the only other source
-          // available aggregates intraday bars, and on an option that
-          // disagrees with the exchange daily candle by far more than a
-          // tick.
-          this.pdrError.set(`Previous day range unavailable — ${describe(e)}`);
+          this.vwapEmaLoading.set(false);
+          this.vwapEmaError.set(`VWAP + EMA unavailable — ${describe(e)}`);
         },
       });
   }
 
-  private addPdrSeries(): void {
-    if (!this.chart) return;
-    for (const line of PDR_LINES) {
-      if (this.pdrSeries.has(line)) continue;
-      const style = PDR_STYLE[line];
-      this.pdrSeries.set(
-        line,
-        this.chart.addSeries(LineSeries, {
-          color: PDR_COLOR,
-          lineWidth: style.width,
-          lineStyle: style.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          // Flat across each day, vertical at the boundary — see the module.
-          lineType: PDR_LINE_TYPE,
-          // The label the requirement asks for: the title rides on the price
-          // scale beside the value, so the line reads "PDH 22,450.00" against
-          // the axis rather than needing a legend.
-          title: style.title,
-          lastValueVisible: true,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-        }),
-      );
-    }
+  private clearVwapEma(): void {
+    this.vwapEma.set(null);
+    this.vwapEmaError.set(null);
+    this.drawMarkers();
   }
 
-  private removePdrSeries(): void {
-    for (const series of this.pdrSeries.values()) this.chart?.removeSeries(series);
-    this.pdrSeries.clear();
-  }
-
-  /**
-   * Redraws the three lines over the bars on screen.
-   *
-   * Re-derived from `drawn` on every redraw rather than set once, because the
-   * *placement* follows the bars even though the values do not: changing the
-   * display interval re-buckets the x axis, and a series still holding
-   * one-minute times would draw its levels against bars that are no longer
-   * there.
-   */
-  private drawPreviousDayRange(): void {
-    if (!this.pdrSeries.size) return;
-    const lines = previousDayRangeLines(this.drawn, this.previousDayRanges());
-    for (const [line, series] of this.pdrSeries) {
-      series.setData(
-        lines[line].map((point) => ({
-          time: point.time as UTCTimestamp,
-          ...(point.value === undefined ? {} : { value: point.value }),
-        })),
-      );
-    }
-  }
-
-  private clearPreviousDayRange(): void {
-    this.previousDayRanges.set([]);
-    this.pdrFetchedFor = null;
-    this.pdrError.set(null);
-    this.pdrLoading.set(false);
-    this.drawPreviousDayRange();
+  /** Marks for every setup, stopping at the close of the newest drawn bar. */
+  private vwapEmaMarks(): SeriesMarker<UTCTimestamp>[] {
+    const result = this.vwapEma();
+    const last = this.drawn.at(-1)?.time as number | undefined;
+    if (!this.showVwapEma() || !result || last === undefined) return [];
+    const seconds = this.displaySeconds();
+    return vwapEmaMarkers(result.result.setups, seconds, (last + seconds) * 1000);
   }
 
   /** Shows or hides the overlay, and remembers which. */
@@ -3858,7 +3388,7 @@ export class ChartStreamComponent {
     // is wider and taller, so it flips sooner and is pinned to the top of the
     // chart, where it has the most room to grow down.
     const width = this.chartHost().nativeElement.clientWidth;
-    const explained = this.engineNotes().length > 0 || this.trendNotes().length > 0;
+    const explained = this.trendNotes().length > 0;
     const cardWidth = explained ? 300 : 156;
     const flip = point.x > width - cardWidth - 14;
     this.tooltipAt.set({

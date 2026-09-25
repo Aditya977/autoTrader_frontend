@@ -36,13 +36,6 @@ export const PAPER_STRATEGIES: readonly PaperStrategy[] = [
       'Follows the backend: enters at the end of a pullback in the direction of the ' +
       '15-minute trend, with the backend’s own stop and exit.',
   }),
-  backendSignalStrategy({
-    backendStrategyId: 'liquidity-sweep',
-    name: 'Liquidity Sweep',
-    description:
-      'Follows the backend: trades a failed run on the previous session’s high or low, ' +
-      'with the backend’s own stop and exit.',
-  }),
 ];
 
 /** The default the setup form opens on. */

@@ -1,7 +1,6 @@
 import type { SeriesMarker, UTCTimestamp } from 'lightweight-charts';
 import { THEME, fade } from '../chart-stream/chart-theme';
 import { bucketStartMs } from '../chart-stream/chart-time';
-import type { MarkNote } from '../market-engine/market-engine-glossary';
 import type {
   BreakState,
   CompactReading,
@@ -501,6 +500,13 @@ export function trendlineSegments(
   broken.sort((a, b) => b.endAt - a.endAt);
   const keptBroken = detail === 'clean' ? broken.slice(0, CLEAN_BROKEN_LINES) : broken;
   return [...active, ...keptBroken.map((b) => b.segment)];
+}
+
+/** One reading, as the chart's hover card prints it. */
+export interface MarkNote {
+  title: string;
+  up: boolean;
+  lines: string[];
 }
 
 /** What the hover card says about the events on one drawn bar. */

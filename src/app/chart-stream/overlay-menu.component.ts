@@ -7,7 +7,7 @@ export interface OverlayItem {
   /** One line on what it draws. */
   hint: string;
   /** Class of the colour key, matching what is drawn on the chart. */
-  swatch: 'sr' | 'pdr' | 'rt' | 'lrj' | 'mte' | 'trd' | 'pat' | 'candles';
+  swatch: 'sr' | 'pdr' | 'rt' | 'lrj' | 'vwe' | 'mte' | 'trd' | 'pat' | 'candles';
   /** Why it cannot be switched on yet, or `null` when it can. */
   blocked: () => string | null;
   on: () => boolean;
@@ -277,6 +277,10 @@ export function countLabel(n: number, one: string, many = `${one}s`): string | n
     }
     .swatch.lrj {
       background: linear-gradient(to right, var(--down) 30%, #e0a458 30% 70%, var(--up) 70%);
+    }
+    /* VWAP + EMA: the pullback amber between both directions' colours. */
+    .swatch.vwe {
+      background: linear-gradient(to right, var(--up) 30%, #e0a458 30% 70%, var(--down) 70%);
     }
     .swatch.pat {
       background: var(--pattern-bullish);
