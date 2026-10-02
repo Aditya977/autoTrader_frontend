@@ -6,9 +6,9 @@ import { BacktestChartComponent } from './backtest-chart.component';
 import { TradingSetupFormComponent } from './trading-setup-form.component';
 
 /**
- * Run the strategy over past days — through the same engine that trades
- * live, so a backtest is a prediction of the live session rather than a
- * separate model of it. Results land in the trade history under "Backtest",
+ * Run the strategy over past days — through the same engine paper trading
+ * uses, so a backtest predicts the paper results rather than modelling them
+ * separately. Results land in the trade history under "Backtest",
  * and the latest run is drawn on a chart that can be played back.
  */
 @Component({
@@ -17,11 +17,10 @@ import { TradingSetupFormComponent } from './trading-setup-form.component';
   imports: [TradingSetupFormComponent, BacktestChartComponent],
   template: `
     <p class="lede">
-      Replays one-minute history through the live engine's own per-instrument lanes — the same
-      signal, stop, hold and sizing code — and records every trade under the Backtest view.
+      Replays one-minute history through paper trading's own per-instrument lanes — the same signal,
+      stop, hold and sizing code — and records every trade under the Backtest view.
     </p>
     <app-trading-setup-form
-      mode="BACKTEST"
       submitLabel="Run backtest"
       busyLabel="Running…"
       [strategies]="strategies()"
@@ -156,7 +155,7 @@ export class BacktestPanelComponent {
     const n = this.storedTrades();
     // Deleting history cannot be undone, so say exactly what goes.
     const ok = window.confirm(
-      `Delete all ${n} saved backtest trade(s)? Live trades are not affected. This cannot be undone.`,
+      `Delete all ${n} saved backtest trade(s)? Paper trades are not affected. This cannot be undone.`,
     );
     if (ok) this.clear.emit();
   }

@@ -72,8 +72,10 @@ describe('ChartStreamSocketService', () => {
 
   it('derives a ws:// url from the http apiBase', () => {
     const sub = service.connect('abc').subscribe();
+    // Same-origin in production: an empty apiBase means the page's own host.
+    const base = environment.apiBase || window.location.origin;
     expect(MockWebSocket.instances[0].url).toBe(
-      `${environment.apiBase.replace(/^http/, 'ws')}/streamer/stream/abc/ws`,
+      `${base.replace(/^http/, 'ws')}/streamer/stream/abc/ws`,
     );
     sub.unsubscribe();
   });

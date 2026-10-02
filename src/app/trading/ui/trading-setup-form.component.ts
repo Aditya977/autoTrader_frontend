@@ -3,25 +3,18 @@ import { FormsModule } from '@angular/forms';
 import { PreferencesService } from '../../shared/preferences.service';
 import type { StrategyDescriptor } from '../../strategy/strategy.models';
 import { addDays, todayKey } from '../format';
-import type {
-  RunBacktestRequest,
-  StartLiveTradingRequest,
-  TradingInstrument,
-} from '../trading.models';
+import type { RunBacktestRequest, TradingInstrument } from '../trading.models';
 import { InstrumentListEditorComponent } from './instrument-list-editor.component';
 
 /**
- * What to trade and with how much — one form for live trading and for a
- * backtest.
+ * What to backtest, with how much, over which days.
  *
- * One form on purpose: a backtest exists to say what a live session would have
- * done, and two forms would drift until the backtest was configured unlike the
- * live run it is supposed to predict. The backtest variant adds a date range
- * and nothing else.
+ * Backtests only: paper trading takes no capital or instruments from the
+ * browser — the backend fixes both.
  *
  * **The strategy's rules are not editable here.** Its stop buffer, quality
  * floor and the rest are defined in the strategy itself and shown read-only,
- * so every run — live or backtest — trades exactly the rule that was written
+ * so every run trades exactly the rule that was written
  * and reviewed, not a variant somebody typed into a box.
  *
  * Sizing is not asked for either: every entry takes the most whole lots the
@@ -72,21 +65,19 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
                 (ngModelChange)="maxPerTrade.set($event)"
               />
             </label>
-            @if (mode() === 'BACKTEST') {
-              <label>
-                <span>From</span>
-                <input
-                  name="from"
-                  type="date"
-                  [ngModel]="from()"
-                  (ngModelChange)="from.set($event)"
-                />
-              </label>
-              <label>
-                <span>To</span>
-                <input name="to" type="date" [ngModel]="to()" (ngModelChange)="to.set($event)" />
-              </label>
-            }
+            <label>
+              <span>From</span>
+              <input
+                name="from"
+                type="date"
+                [ngModel]="from()"
+                (ngModelChange)="from.set($event)"
+              />
+            </label>
+            <label>
+              <span>To</span>
+              <input name="to" type="date" [ngModel]="to()" (ngModelChange)="to.set($event)" />
+            </label>
           </div>
 
           @if (strategy(); as s) {
@@ -273,13 +264,11 @@ import { InstrumentListEditorComponent } from './instrument-list-editor.componen
 export class TradingSetupFormComponent {
   private readonly prefs = inject(PreferencesService);
 
-  readonly mode = input<'LIVE' | 'BACKTEST'>('LIVE');
   readonly strategies = input<readonly StrategyDescriptor[]>([]);
   readonly busy = input(false);
   readonly submitLabel = input('Start');
   readonly busyLabel = input('Working…');
 
-  readonly startLive = output<StartLiveTradingRequest>();
   readonly runBacktest = output<RunBacktestRequest>();
 
   readonly strategyId = signal<string>('');
@@ -304,10 +293,8 @@ export class TradingSetupFormComponent {
     const capital = Number(this.capital());
     if (!Number.isFinite(capital) || capital <= 0) return 'Enter the capital.';
     if (this.instruments().length === 0) return 'Add at least one instrument.';
-    if (this.mode() === 'BACKTEST') {
-      if (!this.from() || !this.to()) return 'Choose a date range.';
-      if (this.from() > this.to()) return '“From” is after “To”.';
-    }
+    if (!this.from() || !this.to()) return 'Choose a date range.';
+    if (this.from() > this.to()) return '“From” is after “To”.';
     return null;
   });
 
@@ -330,18 +317,15 @@ export class TradingSetupFormComponent {
     if (this.problem() || !strategy) return;
     const maxPerTrade = Number(this.maxPerTrade());
     // No `params`: the strategy's own values are the rule.
-    const base: StartLiveTradingRequest = {
+    this.runBacktest.emit({
       strategyId: strategy.id,
       capital: Number(this.capital()),
       instruments: this.instruments(),
       ...(Number.isFinite(maxPerTrade) && maxPerTrade > 0
         ? { maxCapitalPerTrade: maxPerTrade }
         : {}),
-    };
-    if (this.mode() === 'BACKTEST') {
-      this.runBacktest.emit({ ...base, from: this.from(), to: this.to() });
-    } else {
-      this.startLive.emit(base);
-    }
+      from: this.from(),
+      to: this.to(),
+    });
   }
 }

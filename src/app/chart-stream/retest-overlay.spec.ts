@@ -240,9 +240,7 @@ describe('retestMarkers', () => {
     expect(retestMarkers([retest({ direction: 'BULLISH' })], 60)[0].color).toContain(
       '38, 161, 123',
     );
-    expect(retestMarkers([retest({ direction: 'BEARISH' })], 60)[0].color).toContain(
-      '239, 83, 80',
-    );
+    expect(retestMarkers([retest({ direction: 'BEARISH' })], 60)[0].color).toContain('239, 83, 80');
   });
 
   it('returns markers in ascending time, as setMarkers requires', () => {

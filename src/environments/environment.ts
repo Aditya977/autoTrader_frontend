@@ -1,5 +1,5 @@
 export const environment = {
   production: true,
-  /** Backend origin. The chart-stream WebSocket URL is derived from this. */
-  apiBase: 'http://localhost:3000',
+  /** Same origin: on the VPS the web server proxies /streamer and /strategy to the backend. */
+  apiBase: '',
 };

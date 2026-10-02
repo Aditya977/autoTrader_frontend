@@ -22,7 +22,6 @@ import type {
   LevelRejectionRequest,
   LevelRejectionResponse,
 } from '../level-rejection/level-rejection.models';
-import type { VwapEmaRequest, VwapEmaResponse } from '../vwap-ema/vwap-ema.models';
 
 /** A backend error, already unwrapped from the `{ error: {...} }` envelope. */
 export class ChartStreamError extends Error {
@@ -215,21 +214,6 @@ export class ChartStreamApiService {
   levelRejection(request: LevelRejectionRequest): Observable<LevelRejectionResponse> {
     return this.http
       .post<LevelRejectionResponse>(`${this.base}/streamer/stream/level-rejection`, request)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * The 1-minute VWAP + 21 EMA trend-pullback sequence — the rejection candles
-   * at the 21 EMA, the break that triggered each, and how each entry played out
-   * (a 1R partial, then the EMA trail), over a window of trading days.
-   *
-   * Session-independent like {@link levelRejection}. VWAP is volume-weighted, so
-   * it only produces setups on an instrument that carries volume — an option or
-   * a stock, never a bare index.
-   */
-  vwapEma(request: VwapEmaRequest): Observable<VwapEmaResponse> {
-    return this.http
-      .post<VwapEmaResponse>(`${this.base}/streamer/stream/vwap-ema`, request)
       .pipe(catchError(this.unwrap));
   }
 

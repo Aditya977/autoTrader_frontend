@@ -1,7 +1,7 @@
 import { Component, DestroyRef, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ChartStreamError } from '../chart-stream/chart-stream-api.service';
-import { NavTabsComponent } from '../shared/nav-tabs.component';
+import { AppHeaderComponent } from '../shared/app-header.component';
 import { SessionLookupComponent } from './session-lookup.component';
 import { DayShapesApiService } from './day-shapes-api.service';
 import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day-shapes.models';
@@ -27,8 +27,9 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
 @Component({
   selector: 'app-day-shapes-page',
   standalone: true,
-  imports: [NavTabsComponent, SessionLookupComponent],
+  imports: [AppHeaderComponent, SessionLookupComponent],
   template: `
+    <app-header />
     <div class="page">
       <header class="head">
         <div>
@@ -38,7 +39,6 @@ import type { CategoryProfile, DayShapeModel, DayShapeModelSummary } from './day
             by shape.
           </p>
         </div>
-        <app-nav-tabs />
       </header>
 
       @if (error(); as message) {

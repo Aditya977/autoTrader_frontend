@@ -1,9 +1,6 @@
 import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
-import {
-  HttpTestingController,
-  provideHttpClientTesting,
-} from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { environment } from '../../environments/environment';
 import { SessionLookupComponent } from './session-lookup.component';
 
@@ -42,9 +39,7 @@ describe('SessionLookupComponent', () => {
 
   const symbols = (list: string[]) => {
     fixture.detectChanges();
-    http
-      .expectOne(`${base}/strategy/day-shapes/symbols`)
-      .flush({ symbols: list });
+    http.expectOne(`${base}/strategy/day-shapes/symbols`).flush({ symbols: list });
     fixture.detectChanges();
   };
 
@@ -77,13 +72,8 @@ describe('SessionLookupComponent', () => {
       .flush({ dates: ['2026-09-04', '2026-09-03'] });
     fixture.detectChanges();
 
-    const session = http.expectOne((r) =>
-      r.url.startsWith(`${base}/strategy/day-shapes/session`),
-    );
-    const query = new URL(
-      session.request.urlWithParams,
-      'http://localhost',
-    ).searchParams;
+    const session = http.expectOne((r) => r.url.startsWith(`${base}/strategy/day-shapes/session`));
+    const query = new URL(session.request.urlWithParams, 'http://localhost').searchParams;
     expect(query.get('symbol')).toBe('NIFTY');
     expect(query.get('date')).toBe('2026-09-04');
     session.flush({ error: 'nothing to show, and that is not what is tested' });

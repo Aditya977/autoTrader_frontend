@@ -6,7 +6,6 @@ import {
   effect,
   inject,
   input,
-  output,
   signal,
   untracked,
   viewChild,
@@ -83,7 +82,6 @@ import {
   type StartStreamRequest,
   type SupportResistanceLevel,
 } from './chart-stream.models';
-import { markersFor } from '../strategy/trade-markers';
 import { THEME, fade } from './chart-theme';
 import {
   SCENARIO_LABELS,
@@ -99,13 +97,9 @@ import {
   type OverlayChip,
   type OverlayGroup,
 } from './overlay-menu.component';
-import type { SimTrade } from '../strategy/strategy.models';
-import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overlay';
-import type { PaperPosition } from '../paper-trade/paper-trade.models';
+import { paperMarkers, paperPriceLines, type ChartPaperTrade } from './paper-trade-overlay';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
-import { vwapEmaMarkers } from '../vwap-ema/vwap-ema-overlay';
-import type { VwapEmaResponse } from '../vwap-ema/vwap-ema.models';
 import { TrendPanelComponent } from '../trend/trend-panel.component';
 import {
   DIRECTION_LABELS,
@@ -419,8 +413,6 @@ interface Readout {
         </div>
       }
 
-      /**
-
       @if (candleBand(); as cs) {
         <div class="levels candle-band">
           <span class="tag">CANDLES</span>
@@ -484,10 +476,6 @@ interface Readout {
       }
 
       @if (levelRejectionError(); as message) {
-        <p class="error">{{ message }}</p>
-      }
-
-      @if (vwapEmaError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -1094,12 +1082,10 @@ export class ChartStreamComponent {
    * A session that has **already been started elsewhere**, to attach to instead
    * of starting one.
    *
-   * This is how a strategy simulation and its chart end up looking at the same
-   * bars rather than at two sessions that merely agree: the simulation starts
-   * the session (it has to — it must be subscribed before the replay runs) and
-   * hands the id here. Without it the panel would open a *second* session over
-   * the same instrument, and the marks drawn on this chart would belong to a
-   * different replay than the one on screen.
+   * For a caller that has to be subscribed to a session before its replay
+   * runs, and so starts it itself: the panel attaches to that session rather
+   * than opening a *second* one over the same instrument, whose bars would
+   * merely agree with the first.
    *
    * `request` is still passed alongside, for the fields the panel reads rather
    * than sends — whether to start with levels showing, chiefly.
@@ -1107,40 +1093,24 @@ export class ChartStreamComponent {
   readonly sessionId = input<string | null>(null);
 
   /**
-   * Simulated trades on **this panel's instrument**, drawn as entry/exit marks.
+   * Paper trades on **this panel's contract**, drawn as entry and exit arrows,
+   * with entry and stop-loss lines while a position is open.
    *
-   * The parent filters by instrument; this component draws whatever it is
-   * given. Times are snapped to the interval on screen — see `trade-markers.ts`
-   * for why that is not optional.
+   * The parent filters by contract; this component draws whatever it is
+   * given. Times are snapped to the interval on screen — see
+   * `paper-trade-overlay.ts` for why that is not optional.
    */
-  readonly trades = input<readonly SimTrade[]>([]);
-
-  /**
-   * Paper positions on **this panel's instrument**, drawn as entry and exit
-   * marks plus live entry, stop and target lines.
-   *
-   * Separate from {@link trades} rather than folded into one list, because the
-   * two are genuinely different objects: a `SimTrade` is a backend book's fill
-   * with its own cost model, and a `PaperPosition` is a hand-sized order that
-   * may still be waiting to fill. Flattening them would need a lossy mapping in
-   * both directions, and the chart draws them differently anyway — only the
-   * paper ones get price lines, because only they are still live decisions the
-   * user can act on.
-   */
-  readonly paperPositions = input<readonly PaperPosition[]>([]);
+  readonly paperTrades = input<readonly ChartPaperTrade[]>([]);
 
   /**
    * Draw the session only as far as this instant — the replay cursor.
    *
    * `null` is the normal chart: draw everything the buffer holds.
    *
-   * This is what makes a paper trade watchable. The bars are all here already
-   * (an instant replay delivered the whole day in under a second), so a
-   * simulation that merely animated its *own* numbers would be doing so over a
-   * chart that had already given away the ending — the stop it is about to hit
-   * is sitting on screen the whole time. Truncating the drawn series to the
-   * bar the simulation has reached rewinds the chart to 09:15 and lets the day
-   * arrive one bar at a time.
+   * The bars are all here already (an instant replay delivers the whole day in
+   * under a second), so stepping through a day means truncating the drawn
+   * series to the bar reached: the chart rewinds to 09:15 and the day arrives
+   * one bar at a time.
    *
    * Everything derived follows for free, because everything derived is
    * computed from the drawn series rather than from the buffer: EMAs, VWAP,
@@ -1153,28 +1123,6 @@ export class ChartStreamComponent {
    * back to `null` redraws the whole session exactly as it was.
    */
   readonly playbackUntilMs = input<number | null>(null);
-
-  /**
-   * Every candle this panel receives, re-emitted for whoever is simulating on
-   * it.
-   *
-   * The chart owns the socket, so it is the only thing that sees the bars, and
-   * the paper-trade engine must not open a second session to get them — that
-   * would be a different replay, and the marks would not line up with the
-   * candles beneath them. Re-emitting is the whole integration: the page
-   * forwards these to the engine, and the engine stays ignorant of sockets.
-   */
-  readonly candle = output<ChartCandleEvent>();
-
-  /**
-   * The feed for this panel has finished — completed, stopped or errored.
-   *
-   * A simulation holding an open position needs to know, because no further
-   * price will ever arrive to move it: without this a replayed day would end
-   * with a position that reads as live, shows a P&L frozen at whatever the last
-   * bar happened to be, and can never hit its stop or its target.
-   */
-  readonly sessionEnded = output<void>();
 
   /** Human name for the panel header — the tradingsymbol, typically. */
   readonly label = input('Chart');
@@ -1335,20 +1283,6 @@ export class ChartStreamComponent {
           note: () => {
             if (this.levelRejectionLoading()) return '…';
             const result = this.levelRejection();
-            return result ? countLabel(result.result.funnel.entries, 'entry', 'entries') : null;
-          },
-        },
-        {
-          id: 'vwap-ema',
-          name: 'VWAP + 21 EMA',
-          hint: 'Bias (VWAP · 21 EMA) → pullback rejection candle → break → entry',
-          swatch: 'vwe',
-          blocked: () => this.needsInstrument(),
-          on: () => this.showVwapEma(),
-          toggle: () => this.toggleVwapEma(),
-          note: () => {
-            if (this.vwapEmaLoading()) return '…';
-            const result = this.vwapEma();
             return result ? countLabel(result.result.funnel.entries, 'entry', 'entries') : null;
           },
         },
@@ -1520,19 +1454,6 @@ export class ChartStreamComponent {
   readonly levelRejectionLoading = signal(false);
   readonly levelRejectionError = signal<string | null>(null);
   private levelRejectionLines: IPriceLine[] = [];
-
-  /* --- vwap-ema ------------------------------------------------------- */
-  /**
-   * The 1-minute VWAP + 21 EMA trend-pullback sequence over the days on screen.
-   *
-   * Session-independent like the level rejection, and drawn the same way — but
-   * markers only: the VWAP and 21 EMA it reads are the chart's own indicators,
-   * so this adds just each setup's rejection candle, entry, 1R partial and exit.
-   */
-  readonly showVwapEma = signal(false);
-  readonly vwapEma = signal<VwapEmaResponse | null>(null);
-  readonly vwapEmaLoading = signal(false);
-  readonly vwapEmaError = signal<string | null>(null);
 
   /* --- trend ---------------------------------------------------------- */
   /**
@@ -1757,7 +1678,7 @@ export class ChartStreamComponent {
       this.chart.subscribeCrosshairMove(this.onCrosshair);
       // Levels and trades can both arrive before the canvas exists — a session
       // started with `levels` publishes its first set within milliseconds of
-      // Start, and an instant replay finishes its whole simulation faster.
+      // Start, and paper trades can be fetched before the first bar arrives.
       this.drawLevels();
       this.drawMarkers();
       this.drawPaperLines();
@@ -1783,22 +1704,10 @@ export class ChartStreamComponent {
       untracked(() => this.start(request));
     });
 
-    // Marks follow both the trades and the timeframe, because a marker's time
-    // has to match a bar the chart is actually drawing — see `trade-markers.ts`.
+    // Paper trades move both the arrows, whose times must match a bar the chart
+    // is drawing (so they follow the timeframe too), and the entry/stop lines.
     effect(() => {
-      this.trades();
-      this.displaySeconds();
-      untracked(() => this.drawMarkers());
-    });
-
-    // Paper positions move both: the arrows, like any other mark, and the
-    // entry/stop/target lines, which nothing else on the chart draws. The
-    // lines are price-only and so do not depend on the interval — but the
-    // marks do, and they share this effect because a position changing has to
-    // republish both or the chart shows a stop line for a trade whose exit
-    // arrow is missing.
-    effect(() => {
-      this.paperPositions();
+      this.paperTrades();
       this.displaySeconds();
       untracked(() => {
         this.drawMarkers();
@@ -1966,17 +1875,12 @@ export class ChartStreamComponent {
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
-    // The same for the VWAP + EMA setups.
-    this.showVwapEma.set(false);
-    this.clearVwapEma();
     // The trend belongs to the instrument that produced it; the focus pick is
     // about how that chart was being read.
     this.showTrend.set(false);
     this.trendFocusChoice.set(null);
     this.clearTrend();
-    // The paper lines describe prices in the series being replaced. The
-    // positions themselves are the page's to keep or clear — this only stops
-    // the old instrument's levels being drawn over the new one's bars.
+    // The paper lines describe prices in the series being replaced.
     this.drawPaperLines();
     this.redraw();
   }
@@ -2002,11 +1906,6 @@ export class ChartStreamComponent {
         switch (event.type) {
           case 'CANDLE':
             this.buffer.add(event);
-            // Emitted before the redraw is even scheduled: the engine reasons
-            // on bars, not on pixels, and making it wait for a canvas would
-            // mean an instant replay finished simulating a different set of
-            // bars than it drew.
-            this.candle.emit(event);
             // Batched by the microtask below rather than redrawn per bar: an
             // instant replay delivers a whole day in one burst of frames, and
             // a `setData` per frame is hundreds of full redraws for one
@@ -2029,11 +1928,6 @@ export class ChartStreamComponent {
             break;
           case 'SESSION_COMPLETED':
           case 'SESSION_STOPPED':
-            // The feed is over, so nothing will ever mark an open paper
-            // position again. Saying so lets the page square it off at the
-            // last traded price rather than leaving a position that appears
-            // live but can never move or exit.
-            this.sessionEnded.emit();
             this.session.update((s) =>
               s
                 ? { ...s, status: event.type === 'SESSION_COMPLETED' ? 'COMPLETED' : 'STOPPED' }
@@ -2470,16 +2364,12 @@ export class ChartStreamComponent {
   }
 
   /**
-   * Draws the entry, stop and target of every live paper position.
+   * Draws the entry and stop-loss of every open paper position.
    *
-   * Price lines rather than marks because a *level* is the whole point: a mark
-   * can say "a stop is set" but cannot say where, and where is the only thing
-   * worth drawing. They are torn down and rebuilt rather than diffed, like the
-   * S/R lines and for the same reason — at most a handful of lines, the rebuild
-   * is cheaper than the bookkeeping a correct diff would need.
-   *
-   * Only live positions contribute, so a chart does not accumulate the levels
-   * of every trade of the day; the exit arrow is the record of a closed one.
+   * Price lines rather than marks because the level is the point: a mark can
+   * say "a stop is set" but not where. Torn down and rebuilt rather than
+   * diffed, like the S/R lines — at most a handful, so the rebuild is cheaper
+   * than a correct diff. Closed trades keep only their arrows.
    */
   private drawPaperLines(): void {
     const series = this.candles;
@@ -2488,12 +2378,12 @@ export class ChartStreamComponent {
     for (const line of this.paperLines) series.removePriceLine(line);
     this.paperLines = [];
 
-    for (const spec of paperPriceLines(this.paperPositions())) {
+    for (const spec of paperPriceLines(this.paperTrades())) {
       this.paperLines.push(
         series.createPriceLine({
           price: spec.price,
           color: spec.colour,
-          lineWidth: spec.width,
+          lineWidth: 1,
           lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
           lineVisible: true,
           axisLabelVisible: true,
@@ -2509,11 +2399,11 @@ export class ChartStreamComponent {
   private paperLines: IPriceLine[] = [];
 
   /**
-   * Draws the simulation's entry and exit arrows.
+   * Draws every mark: paper trades, retests, level rejections and trend.
    *
-   * A whole replacement set every time, like the levels: the run publishes its
-   * complete trade list on every frame, and a chart that tried to append would
-   * duplicate every mark the first time a socket reconnected.
+   * A whole replacement set every time, like the levels: the paper trades
+   * arrive as a complete list on every refresh, and a chart that tried to
+   * append would duplicate every mark.
    */
   private drawMarkers(): void {
     if (!this.markers) return;
@@ -2552,14 +2442,9 @@ export class ChartStreamComponent {
     // candle.
     return withinSeries(
       mergeMarkers(
-        markersFor(this.trades(), seconds),
-        // The paper book's own entries and exits. A fourth source rather than
-        // a merge with `trades`: the two describe different books, and a user
-        // running both must be able to tell which arrow was theirs.
-        paperMarkers(this.paperPositions(), seconds),
+        paperMarkers(this.paperTrades(), seconds),
         retests,
         this.levelRejectionMarks(),
-        this.vwapEmaMarks(),
         this.showTrend()
           ? trendMarkers(
               this.focusedTrend(),
@@ -2915,7 +2800,6 @@ export class ChartStreamComponent {
       (this.showLevels() ? 1 : 0) +
       (this.showRetests() ? 1 : 0) +
       (this.showLevelRejection() ? 1 : 0) +
-      (this.showVwapEma() ? 1 : 0) +
       (this.showTrend() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0),
@@ -2933,7 +2817,6 @@ export class ChartStreamComponent {
       this.levelsLoading() ||
       this.retestsLoading() ||
       this.levelRejectionLoading() ||
-      this.vwapEmaLoading() ||
       this.trendLoading() ||
       this.candlePatternsLoading(),
   );
@@ -2950,7 +2833,6 @@ export class ChartStreamComponent {
     if (this.showLevels()) this.toggleLevels();
     if (this.showRetests()) this.toggleRetests();
     if (this.showLevelRejection()) this.toggleLevelRejection();
-    if (this.showVwapEma()) this.toggleVwapEma();
     if (this.showTrend()) this.toggleTrend();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
@@ -3236,63 +3118,6 @@ export class ChartStreamComponent {
     if (!this.showLevelRejection() || !result || last === undefined) return [];
     const seconds = this.displaySeconds();
     return levelRejectionMarkers(result.result.setups, seconds, (last + seconds) * 1000);
-  }
-
-  /**
-   * Toggles the VWAP + 21 EMA overlay, fetching its setups the first time — one
-   * request over the days the chart is showing, on the default rules. Off, it
-   * keeps the result for an instant re-show, like the level rejection.
-   */
-  toggleVwapEma(): void {
-    const next = !this.showVwapEma();
-    this.showVwapEma.set(next);
-    if (next && !this.vwapEma() && !this.vwapEmaLoading()) {
-      this.fetchVwapEma();
-    }
-    // Markers only — the shared publisher picks them up.
-    this.drawMarkers();
-  }
-
-  /** Asks for the setups over the days the chart is showing, on the default rules. */
-  private fetchVwapEma(): void {
-    const request = this.request();
-    const window = this.chartWindow();
-    if (!request || !window) return;
-    this.vwapEmaError.set(null);
-    this.vwapEmaLoading.set(true);
-    this.api
-      .vwapEma({
-        instrument: request.instrument,
-        from: window.from,
-        to: window.to,
-      })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (result) => {
-          this.vwapEmaLoading.set(false);
-          this.vwapEma.set(result);
-          this.drawMarkers();
-        },
-        error: (e: ChartStreamError) => {
-          this.vwapEmaLoading.set(false);
-          this.vwapEmaError.set(`VWAP + EMA unavailable — ${describe(e)}`);
-        },
-      });
-  }
-
-  private clearVwapEma(): void {
-    this.vwapEma.set(null);
-    this.vwapEmaError.set(null);
-    this.drawMarkers();
-  }
-
-  /** Marks for every setup, stopping at the close of the newest drawn bar. */
-  private vwapEmaMarks(): SeriesMarker<UTCTimestamp>[] {
-    const result = this.vwapEma();
-    const last = this.drawn.at(-1)?.time as number | undefined;
-    if (!this.showVwapEma() || !result || last === undefined) return [];
-    const seconds = this.displaySeconds();
-    return vwapEmaMarkers(result.result.setups, seconds, (last + seconds) * 1000);
   }
 
   /** Shows or hides the overlay, and remembers which. */

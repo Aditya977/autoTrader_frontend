@@ -5,14 +5,10 @@ import { catchError } from 'rxjs/operators';
 import { environment } from '../../environments/environment';
 import { ChartStreamError } from '../chart-stream/chart-stream-api.service';
 import type { ApiErrorBody } from '../chart-stream/chart-stream.models';
-import type {
-  SimulationRunSnapshot,
-  StartSimulationRequest,
-  StrategyDescriptor,
-} from './strategy.models';
+import type { StrategyDescriptor } from './strategy.models';
 
 /**
- * The `/strategy` half of the backend.
+ * The strategy catalogue — `GET /strategy/catalogue`.
  *
  * Errors are unwrapped into {@link ChartStreamError}, the same class the chart
  * API throws, because they arrive in the same `{ error: { code, message } }`
@@ -33,32 +29,6 @@ export class StrategyApiService {
   catalogue(): Observable<{ strategies: StrategyDescriptor[] }> {
     return this.http
       .get<{ strategies: StrategyDescriptor[] }>(`${this.base}/strategy/catalogue`)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * Starts the chart sessions *and* the books that trade them, in one call.
-   *
-   * The returned snapshot's `charts[].sessionId` are ordinary chart sessions:
-   * the chart panels adopt them rather than starting their own, so what the
-   * strategies decided from and what the user is watching are the same bars.
-   */
-  start(request: StartSimulationRequest): Observable<SimulationRunSnapshot> {
-    return this.http
-      .post<SimulationRunSnapshot>(`${this.base}/strategy/simulation/start`, request)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /** Stops the run and every chart session behind it. */
-  stop(runId: string): Observable<SimulationRunSnapshot> {
-    return this.http
-      .post<SimulationRunSnapshot>(`${this.base}/strategy/simulation/${runId}/stop`, {})
-      .pipe(catchError(this.unwrap));
-  }
-
-  status(runId: string): Observable<SimulationRunSnapshot> {
-    return this.http
-      .get<SimulationRunSnapshot>(`${this.base}/strategy/simulation/${runId}`)
       .pipe(catchError(this.unwrap));
   }
 

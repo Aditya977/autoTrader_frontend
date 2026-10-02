@@ -53,9 +53,13 @@ describe('PatternTimeframeTableComponent', () => {
     ]);
     const cards = fixture.nativeElement.querySelectorAll('.card');
     expect(cards.length).toBe(5);
-    expect(
-      [...cards].map((c: Element) => c.querySelector('.tf')?.textContent?.trim()),
-    ).toEqual(['1m', '5m', '30m', '1h', '1d']);
+    expect([...cards].map((c: Element) => c.querySelector('.tf')?.textContent?.trim())).toEqual([
+      '1m',
+      '5m',
+      '30m',
+      '1h',
+      '1d',
+    ]);
   });
 
   it('names the pattern, its status and its score', () => {

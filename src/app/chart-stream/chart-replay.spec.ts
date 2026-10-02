@@ -16,7 +16,7 @@ import type {
  * The replay cursor: drawing a session that has already arrived, one bar at a
  * time, and putting it back exactly as it was.
  *
- * This is what makes a paper trade watchable rather than a foregone
+ * This is what makes a simulated trade watchable rather than a foregone
  * conclusion — at the default replay speed the whole day is on screen within a
  * second of pressing Start, so a simulation running over it would be animating
  * numbers beside a chart that has already shown the ending.

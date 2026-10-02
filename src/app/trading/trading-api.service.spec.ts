@@ -20,34 +20,21 @@ describe('TradingApiService', () => {
 
   afterEach(() => http.verify());
 
-  it('starts a live session with every instrument in one request', () => {
-    const request = {
-      strategyId: 'two-candle-retest',
-      capital: 100_000,
-      instruments: [
-        {
-          instrument: {
-            type: 'CE' as const,
-            underlying: 'NIFTY',
-            expiry: '2026-09-25',
-            strike: 24500,
-          },
-        },
-        {
-          instrument: {
-            type: 'PE' as const,
-            underlying: 'NIFTY',
-            expiry: '2026-09-25',
-            strike: 24500,
-          },
-        },
-      ],
-    };
-    api.startLive(request).subscribe();
-    const req = http.expectOne(`${base}/strategy/live/start`);
-    expect(req.request.method).toBe('POST');
-    expect(req.request.body).toEqual(request);
+  it('switches a strategy on for paper trading with only the flag — no capital, no size', () => {
+    api.setStrategyEnabled('fib-momentum', true).subscribe();
+    const req = http.expectOne(`${base}/strategy/paper/strategies/fib-momentum`);
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ enabled: true });
     req.flush({});
+  });
+
+  it('asks for the paper report with only the filters that are set', () => {
+    api.paperTrades({ from: '2026-09-01', instrument: 'BANKNIFTY' }).subscribe();
+    const req = http.expectOne((r) => r.url === `${base}/strategy/paper/trades`);
+    expect(req.request.params.get('from')).toBe('2026-09-01');
+    expect(req.request.params.get('instrument')).toBe('BANKNIFTY');
+    expect(req.request.params.has('to')).toBeFalse();
+    req.flush({ trades: [] });
   });
 
   it('asks for one mode’s figures, with the range only when set', () => {
@@ -61,14 +48,14 @@ describe('TradingApiService', () => {
 
   it('unwraps the backend error envelope', () => {
     let caught: unknown;
-    api.stopLive('nope').subscribe({ error: (e: unknown) => (caught = e) });
+    api.setStrategyEnabled('nope', true).subscribe({ error: (e: unknown) => (caught = e) });
     http
-      .expectOne(`${base}/strategy/live/nope/stop`)
+      .expectOne(`${base}/strategy/paper/strategies/nope`)
       .flush(
-        { error: { code: 'NOT_FOUND', message: 'no live session nope' } },
+        { error: { code: 'NOT_FOUND', message: 'no strategy nope' } },
         { status: 404, statusText: 'Not Found' },
       );
     expect(caught instanceof ChartStreamError).toBeTrue();
-    expect((caught as ChartStreamError).message).toBe('no live session nope');
+    expect((caught as ChartStreamError).message).toBe('no strategy nope');
   });
 });
