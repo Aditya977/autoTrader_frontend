@@ -10,16 +10,18 @@ import type {
   DashboardOverview,
   DashboardPerformance,
   DashboardTrade,
-  LiveSessionSnapshot,
+  PaperInstrument,
+  PaperTradeRecord,
+  PaperTradingStatus,
   RunBacktestRequest,
-  StartLiveTradingRequest,
+  StrategyDeployment,
   TradeHistoryQuery,
   TradeMode,
 } from './trading.models';
 
 /**
- * Live trading, backtests and the dashboard figures — the backend's
- * `/strategy/live`, `/strategy/backtest` and `/strategy/dashboard` routes.
+ * Paper trading, backtests and the dashboard figures — the backend's
+ * `/strategy/paper`, `/strategy/backtest` and `/strategy/dashboard` routes.
  *
  * Errors are unwrapped into {@link ChartStreamError}, like the rest of the
  * app's API clients, because they arrive in the same envelope.
@@ -29,29 +31,78 @@ export class TradingApiService {
   private readonly http = inject(HttpClient);
   private readonly base = environment.apiBase;
 
-  startLive(request: StartLiveTradingRequest): Observable<LiveSessionSnapshot> {
+  // --- paper trading --------------------------------------------------------
+
+  paperStatus(): Observable<PaperTradingStatus> {
     return this.http
-      .post<LiveSessionSnapshot>(`${this.base}/strategy/live/start`, request)
+      .get<PaperTradingStatus>(`${this.base}/strategy/paper/status`)
       .pipe(catchError(this.unwrap));
   }
 
-  stopLive(sessionId: string): Observable<LiveSessionSnapshot> {
+  /** Stops today's session (squaring off) and keeps it stopped until resumed. */
+  pausePaper(): Observable<PaperTradingStatus> {
     return this.http
-      .post<LiveSessionSnapshot>(`${this.base}/strategy/live/${sessionId}/stop`, {})
+      .post<PaperTradingStatus>(`${this.base}/strategy/paper/pause`, {})
       .pipe(catchError(this.unwrap));
   }
 
-  liveSessions(): Observable<{ sessions: LiveSessionSnapshot[] }> {
+  resumePaper(): Observable<PaperTradingStatus> {
     return this.http
-      .get<{ sessions: LiveSessionSnapshot[] }>(`${this.base}/strategy/live`)
+      .post<PaperTradingStatus>(`${this.base}/strategy/paper/resume`, {})
       .pipe(catchError(this.unwrap));
   }
+
+  deployments(): Observable<{ strategies: StrategyDeployment[] }> {
+    return this.http
+      .get<{ strategies: StrategyDeployment[] }>(`${this.base}/strategy/paper/strategies`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  setStrategyEnabled(strategyId: string, enabled: boolean): Observable<StrategyDeployment> {
+    return this.http
+      .put<StrategyDeployment>(
+        `${this.base}/strategy/paper/strategies/${encodeURIComponent(strategyId)}`,
+        { enabled },
+      )
+      .pipe(catchError(this.unwrap));
+  }
+
+  /** The paper-trading report, newest entry first. */
+  paperTrades(query: {
+    from?: string;
+    to?: string;
+    strategy?: string;
+    instrument?: PaperInstrument;
+    limit?: number;
+  }): Observable<{ trades: PaperTradeRecord[] }> {
+    let params = new HttpParams();
+    if (query.from) params = params.set('from', query.from);
+    if (query.to) params = params.set('to', query.to);
+    if (query.strategy) params = params.set('strategy', query.strategy);
+    if (query.instrument) params = params.set('instrument', query.instrument);
+    if (query.limit) params = params.set('limit', String(query.limit));
+    return this.http
+      .get<{ trades: PaperTradeRecord[] }>(`${this.base}/strategy/paper/trades`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  // --- backtests -----------------------------------------------------------
 
   runBacktest(request: RunBacktestRequest): Observable<BacktestRunSummary> {
     return this.http
       .post<BacktestRunSummary>(`${this.base}/strategy/backtest/run`, request)
       .pipe(catchError(this.unwrap));
   }
+
+  /** Deletes backtest history — every run, or one. Paper trades are never touched. */
+  clearBacktests(runId?: string): Observable<{ deleted: number }> {
+    const params = runId ? new HttpParams().set('runId', runId) : new HttpParams();
+    return this.http
+      .delete<{ deleted: number }>(`${this.base}/strategy/backtest/trades`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  // --- dashboard figures, for either mode ---------------------------------
 
   overview(
     mode: TradeMode,

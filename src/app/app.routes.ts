@@ -23,14 +23,6 @@ export const routes: Routes = [
   // The page this replaced. Kept as a redirect so an old bookmark still lands.
   { path: 'backtest', pathMatch: 'full', redirectTo: 'dashboard' },
   {
-    path: 'day-shapes',
-    // Static, compiled-in taxonomies — but the endpoint sits behind the same
-    // session guard as everything else on /strategy, so the guard stays.
-    canActivate: [authGuard],
-    loadComponent: () =>
-      import('./day-shapes/day-shapes-page.component').then((m) => m.DayShapesPageComponent),
-  },
-  {
     path: 'chart',
     // Every endpoint this route calls is behind an Upstox session, so an
     // unauthenticated visit would render a page whose every request 401s.

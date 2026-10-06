@@ -1,0 +1,26 @@
+# VPS front door — see autoTrader/deploy/README.md.
+#
+# DOMAIN: the public host name. With a real domain Caddy obtains and renews a
+# TLS certificate on its own (ports 80 and 443 must be reachable).
+#
+# The backend's API has no user accounts of its own — it trusts whoever holds
+# the server's Upstox session — so everything here sits behind basic auth.
+# BASIC_AUTH_HASH is a bcrypt hash: caddy hash-password --plaintext '<pw>'.
+{$DOMAIN:localhost} {
+	encode gzip
+
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	@api path /streamer/* /strategy/*
+	handle @api {
+		reverse_proxy app:3000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

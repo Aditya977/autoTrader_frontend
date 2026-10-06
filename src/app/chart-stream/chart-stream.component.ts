@@ -6,7 +6,6 @@ import {
   effect,
   inject,
   input,
-  output,
   signal,
   untracked,
   viewChild,
@@ -54,14 +53,6 @@ import { PatternTimeframeTableComponent } from '../chart-patterns/ui/pattern-tim
 import { EMA_INDICATORS, ema, emaColor } from '../chart-indicators/ema';
 import { VWAP_COLOR, vwapLine } from '../chart-indicators/vwap';
 import {
-  PDR_COLOR,
-  PDR_LINES,
-  PDR_LINE_TYPE,
-  PDR_STYLE,
-  previousDayRangeLines,
-  type PdrLine,
-} from '../chart-indicators/previous-day-range';
-import {
   CandleSeriesBuffer,
   toCandlestickData,
   toVolumeData,
@@ -86,13 +77,11 @@ import {
   type ChartRetest,
   type ChartRetests,
   type ChartSessionSnapshot,
-  type PreviousDayRange,
   type SessionLevelsQuery,
   type SessionRetestsQuery,
   type StartStreamRequest,
   type SupportResistanceLevel,
 } from './chart-stream.models';
-import { markersFor } from '../strategy/trade-markers';
 import { THEME, fade } from './chart-theme';
 import {
   SCENARIO_LABELS,
@@ -100,36 +89,36 @@ import {
   describeRetest,
   mergeMarkers,
   retestMarkers,
+  withinSeries,
 } from './retest-overlay';
-import { MarketEnginePanelComponent } from '../market-engine/market-engine-panel.component';
 import {
   OverlayMenuComponent,
   countLabel,
   type OverlayChip,
   type OverlayGroup,
 } from './overlay-menu.component';
-import {
-  marketStateMarkers,
-  marksAtBar,
-  protectedLines,
-  withinSeries,
-  zoneLines,
-} from '../market-engine/market-engine-overlay';
-import { explainMark, type MarkNote } from '../market-engine/market-engine-glossary';
-import type {
-  ChartSet,
-  EventLogIngestResult,
-  MarketEngineResearchRequest,
-  MarketEngineResult,
-  ParityCheckResult,
-  SessionMarketEngineQuery,
-  ValidationResult,
-} from '../market-engine/market-engine.models';
-import type { SimTrade } from '../strategy/strategy.models';
-import { paperMarkers, paperPriceLines } from '../paper-trade/paper-trade-overlay';
-import type { PaperPosition } from '../paper-trade/paper-trade.models';
+import { paperMarkers, paperPriceLines, type ChartPaperTrade } from './paper-trade-overlay';
 import { levelLinesAt, levelRejectionMarkers } from '../level-rejection/level-rejection-overlay';
 import type { LevelRejectionResponse } from '../level-rejection/level-rejection.models';
+import { TrendPanelComponent } from '../trend/trend-panel.component';
+import {
+  DIRECTION_LABELS,
+  chartTimeframe,
+  eventNotesAtBar,
+  readingAt,
+  trendLines,
+  trendMarkers,
+  trendlineSegments,
+  type ChartAxis,
+  type MarkNote,
+  type TrendDetail,
+} from '../trend/trend-overlay';
+import {
+  DEFAULT_TREND_TIMEFRAMES,
+  type TimeframeTrend,
+  type TrendResult,
+  type TrendTimeframe,
+} from '../trend/trend.models';
 
 /**
  * How a support/resistance level is drawn.
@@ -193,7 +182,7 @@ interface Readout {
   imports: [
     PatternTimeframeTableComponent,
     CandlePatternListComponent,
-    MarketEnginePanelComponent,
+    TrendPanelComponent,
     OverlayMenuComponent,
   ],
   template: `
@@ -238,7 +227,12 @@ interface Readout {
             </button>
 
             @if (showOverlays()) {
-              <app-overlay-menu title="Overlays" [groups]="overlayGroups" [count]="overlayCount()" (clearAll)="clearOverlays()" />
+              <app-overlay-menu
+                title="Overlays"
+                [groups]="overlayGroups"
+                [count]="overlayCount()"
+                (clearAll)="clearOverlays()"
+              />
             }
           </div>
 
@@ -419,22 +413,6 @@ interface Readout {
         </div>
       }
 
-      /**
-      @if (previousDayBand(); as pdr) {
-        <div class="levels pdr-band">
-          <span class="tag">PDR</span>
-          <span class="lvl pdh">PDH {{ formatBand(pdr.pdh) }}</span>
-          <span class="lvl mid">Mid {{ formatBand(pdr.mid) }}</span>
-          <span class="lvl pdl">PDL {{ formatBand(pdr.pdl) }}</span>
-          <span class="meta">
-            from {{ pdr.previousTradingDate }}
-            @if (pdr.days > 1) {
-              · {{ pdr.days }} days annotated
-            }
-          </span>
-        </div>
-      }
-
       @if (candleBand(); as cs) {
         <div class="levels candle-band">
           <span class="tag">CANDLES</span>
@@ -465,10 +443,6 @@ interface Readout {
         <p class="error">{{ message }}</p>
       }
 
-      @if (pdrError(); as message) {
-        <p class="error">{{ message }}</p>
-      }
-
       @if (levelsError(); as message) {
         <p class="error">{{ message }}</p>
       }
@@ -482,24 +456,22 @@ interface Readout {
         menu: the menu is for switching things on, and this is several lines of
         prose a person reads while looking at the candles.
       -->
-      @if (showMarketEngine()) {
+      <!-- Every timeframe's trend, below the chart. -->
+      @if (showTrend()) {
         <div class="engine-wrap">
-          <app-market-engine-panel
-            [result]="marketEngine()"
-            [ingestResult]="engineIngest()"
-            [parityResult]="engineParity()"
-            [validationResult]="engineValidation()"
-            [researchBusy]="engineResearchBusy()"
-            [researchError]="engineResearchError()"
-            (chartSetChange)="setChartSet($event)"
-            (ingest)="storeEngineEvents()"
-            (parity)="checkEngineParity()"
-            (validate)="runEngineValidation()"
+          <app-trend-panel
+            [result]="trend()"
+            [focus]="trendFocus()"
+            [automatic]="trendFocusIsAutomatic()"
+            [detail]="trendDetail()"
+            [knownAtMs]="trendKnownAt()"
+            (focusChange)="setTrendFocus($event)"
+            (detailChange)="setTrendDetail($event)"
           />
         </div>
       }
 
-      @if (marketEngineError(); as message) {
+      @if (trendError(); as message) {
         <p class="error">{{ message }}</p>
       }
 
@@ -544,8 +516,8 @@ interface Readout {
                 <dd>{{ t.readout.volume }}</dd>
               </div>
             </dl>
-            <!-- What the engine mark on this candle means, so a label is never a riddle. -->
-            @for (note of engineNotes(); track $index) {
+            <!-- The trend events on this candle — breaks, false breaks, reversals. -->
+            @for (note of trendNotes(); track $index) {
               <div class="t-note" [class.up]="note.up" [class.down]="!note.up">
                 <div class="t-note-title">{{ note.up ? '↑' : '↓' }} {{ note.title }}</div>
                 @for (line of note.lines; track $index) {
@@ -784,18 +756,6 @@ interface Readout {
        the rest of the band uses rather than borrowing the error colour. */
     .candle-band .meta.none {
       font-style: italic;
-    }
-
-    .pdr-band .lvl.pdh,
-    .pdr-band .lvl.pdl,
-    .pdr-band .lvl.mid {
-      color: #c3d94e;
-    }
-
-    /* The midpoint is derived rather than observed, and reads as secondary
-       here for the same reason its line is drawn thinner. */
-    .pdr-band .lvl.mid {
-      opacity: 0.75;
     }
 
     /* The indicators menu is positioned against this, so the button and the
@@ -1122,12 +1082,10 @@ export class ChartStreamComponent {
    * A session that has **already been started elsewhere**, to attach to instead
    * of starting one.
    *
-   * This is how a strategy simulation and its chart end up looking at the same
-   * bars rather than at two sessions that merely agree: the simulation starts
-   * the session (it has to — it must be subscribed before the replay runs) and
-   * hands the id here. Without it the panel would open a *second* session over
-   * the same instrument, and the marks drawn on this chart would belong to a
-   * different replay than the one on screen.
+   * For a caller that has to be subscribed to a session before its replay
+   * runs, and so starts it itself: the panel attaches to that session rather
+   * than opening a *second* one over the same instrument, whose bars would
+   * merely agree with the first.
    *
    * `request` is still passed alongside, for the fields the panel reads rather
    * than sends — whether to start with levels showing, chiefly.
@@ -1135,40 +1093,24 @@ export class ChartStreamComponent {
   readonly sessionId = input<string | null>(null);
 
   /**
-   * Simulated trades on **this panel's instrument**, drawn as entry/exit marks.
+   * Paper trades on **this panel's contract**, drawn as entry and exit arrows,
+   * with entry and stop-loss lines while a position is open.
    *
-   * The parent filters by instrument; this component draws whatever it is
-   * given. Times are snapped to the interval on screen — see `trade-markers.ts`
-   * for why that is not optional.
+   * The parent filters by contract; this component draws whatever it is
+   * given. Times are snapped to the interval on screen — see
+   * `paper-trade-overlay.ts` for why that is not optional.
    */
-  readonly trades = input<readonly SimTrade[]>([]);
-
-  /**
-   * Paper positions on **this panel's instrument**, drawn as entry and exit
-   * marks plus live entry, stop and target lines.
-   *
-   * Separate from {@link trades} rather than folded into one list, because the
-   * two are genuinely different objects: a `SimTrade` is a backend book's fill
-   * with its own cost model, and a `PaperPosition` is a hand-sized order that
-   * may still be waiting to fill. Flattening them would need a lossy mapping in
-   * both directions, and the chart draws them differently anyway — only the
-   * paper ones get price lines, because only they are still live decisions the
-   * user can act on.
-   */
-  readonly paperPositions = input<readonly PaperPosition[]>([]);
+  readonly paperTrades = input<readonly ChartPaperTrade[]>([]);
 
   /**
    * Draw the session only as far as this instant — the replay cursor.
    *
    * `null` is the normal chart: draw everything the buffer holds.
    *
-   * This is what makes a paper trade watchable. The bars are all here already
-   * (an instant replay delivered the whole day in under a second), so a
-   * simulation that merely animated its *own* numbers would be doing so over a
-   * chart that had already given away the ending — the stop it is about to hit
-   * is sitting on screen the whole time. Truncating the drawn series to the
-   * bar the simulation has reached rewinds the chart to 09:15 and lets the day
-   * arrive one bar at a time.
+   * The bars are all here already (an instant replay delivers the whole day in
+   * under a second), so stepping through a day means truncating the drawn
+   * series to the bar reached: the chart rewinds to 09:15 and the day arrives
+   * one bar at a time.
    *
    * Everything derived follows for free, because everything derived is
    * computed from the drawn series rather than from the buffer: EMAs, VWAP,
@@ -1181,28 +1123,6 @@ export class ChartStreamComponent {
    * back to `null` redraws the whole session exactly as it was.
    */
   readonly playbackUntilMs = input<number | null>(null);
-
-  /**
-   * Every candle this panel receives, re-emitted for whoever is simulating on
-   * it.
-   *
-   * The chart owns the socket, so it is the only thing that sees the bars, and
-   * the paper-trade engine must not open a second session to get them — that
-   * would be a different replay, and the marks would not line up with the
-   * candles beneath them. Re-emitting is the whole integration: the page
-   * forwards these to the engine, and the engine stays ignorant of sockets.
-   */
-  readonly candle = output<ChartCandleEvent>();
-
-  /**
-   * The feed for this panel has finished — completed, stopped or errored.
-   *
-   * A simulation holding an open position needs to know, because no further
-   * price will ever arrive to move it: without this a replayed day would end
-   * with a position that reads as live, shows a P&L frozen at whatever the last
-   * bar happened to be, and can never hit its stop or its target.
-   */
-  readonly sessionEnded = output<void>();
 
   /** Human name for the panel header — the tradingsymbol, typically. */
   readonly label = input('Chart');
@@ -1217,30 +1137,6 @@ export class ChartStreamComponent {
   private volume?: ISeriesApi<'Histogram'>;
   /** v5 moved markers out of the series and into a plugin attached to it. */
   private markers?: ISeriesMarkersPluginApi<Time>;
-  /* --- previous day range -------------------------------------------- */
-  /** Whether PDH/PDL/mid are drawn. Persisted, like the other toggles. */
-  readonly showPreviousDayRange = signal(false);
-  /**
-   * One range per trading day the chart can show, newest last.
-   *
-   * Held rather than recomputed because it cannot change: every value comes
-   * from a session that has already closed. Fetched once per instrument/date
-   * and then only redrawn — which is what "static across the session" means in
-   * practice, and why no amount of streaming can move these lines.
-   */
-  readonly previousDayRanges = signal<PreviousDayRange[]>([]);
-  readonly pdrLoading = signal(false);
-  readonly pdrError = signal<string | null>(null);
-  /**
-   * The instrument and date the held ranges belong to.
-   *
-   * The guard against the one way this overlay can lie: turning it off, moving
-   * the panel to another instrument, and turning it back on would otherwise
-   * redraw the previous instrument's levels over the new one's bars.
-   */
-  private pdrFetchedFor: string | null = null;
-  private readonly pdrSeries = new Map<PdrLine, ISeriesApi<'Line'>>();
-
   private readonly buffer = new CandleSeriesBuffer();
 
   /**
@@ -1361,16 +1257,6 @@ export class ChartStreamComponent {
           toggle: () => this.toggleLevels(),
           note: () => (this.levelsLoading() ? '…' : countLabel(this.levels().length, 'level')),
         },
-        {
-          id: 'pdr',
-          name: 'Previous day range',
-          hint: "Yesterday's high, low and midpoint",
-          swatch: 'pdr',
-          blocked: () => this.needsInstrument(),
-          on: () => this.showPreviousDayRange(),
-          toggle: () => this.togglePreviousDayRange(),
-          note: () => (this.pdrLoading() ? '…' : null),
-        },
       ],
     },
     {
@@ -1401,17 +1287,20 @@ export class ChartStreamComponent {
           },
         },
         {
-          id: 'market-engine',
-          name: 'Market engine',
-          hint: 'Trend state across five timeframes, read-out below the chart',
-          swatch: 'mte',
+          id: 'trend',
+          name: 'Trend',
+          hint: 'Structure-first trend on 1m → 1D: swings, breaks, reversals, read-out below',
+          swatch: 'trd',
           blocked: () => this.needsSession(),
-          on: () => this.showMarketEngine(),
-          toggle: () => this.toggleMarketEngine(),
+          on: () => this.showTrend(),
+          toggle: () => this.toggleTrend(),
           note: () => {
-            if (this.marketEngineLoading()) return '…';
-            const engine = this.marketEngine();
-            return engine ? countLabel(engine.readings.length, 'reading') : null;
+            if (this.trendLoading() && !this.trend()) return '…';
+            const focus = this.focusedTrend();
+            const reading = focus ? readingAt(focus, this.trendKnownAt()) : null;
+            return focus && reading
+              ? `${focus.timeframe} ${DIRECTION_LABELS[reading.direction].toLowerCase()}`
+              : null;
           },
         },
       ],
@@ -1474,8 +1363,7 @@ export class ChartStreamComponent {
   protected closeMenusOutside(event: MouseEvent): void {
     if (!this.showOverlays() && !this.showIndicators()) return;
     const target = event.target;
-    const inside = (el: Element | null) =>
-      !!el && target instanceof Node && el.contains(target);
+    const inside = (el: Element | null) => !!el && target instanceof Node && el.contains(target);
     const [overlayHost, indicatorHost] = Array.from(
       (this.hostElement.nativeElement as HTMLElement).querySelectorAll('.ind'),
     );
@@ -1552,38 +1440,6 @@ export class ChartStreamComponent {
   readonly retestsLoading = signal(false);
   readonly retestsError = signal<string | null>(null);
 
-  /**
-   * The multi-timeframe engine's readings.
-   *
-   * Unlike the levels and the retests these are **not** interval-bound: the
-   * engine reads five timeframes by definition, and which five is `chartSet`,
-   * not the bar size on screen. So switching the chart from 1m to 15m does not
-   * invalidate them — it only changes which bar each mark has to be snapped to.
-   * That is the whole reason `refreshMarketEngine` is not called from the
-   * interval effect, where the other two are.
-   */
-  readonly marketEngine = signal<MarketEngineResult | null>(null);
-  readonly showMarketEngine = signal(false);
-  readonly marketEngineLoading = signal(false);
-  readonly marketEngineError = signal<string | null>(null);
-  /**
-   * Which bar sizes fill the cascade: `standard` is 4H/1H, `nse` is 125m/75m.
-   *
-   * Kept here rather than inside the panel because it is a *request* parameter
-   * — changing it re-asks the backend — and a control whose effect is a fetch
-   * belongs next to the fetch.
-   */
-  readonly chartSet = signal<ChartSet>('standard');
-
-  /* Research results — the event log, replay parity and validation. */
-  readonly engineIngest = signal<EventLogIngestResult | null>(null);
-  readonly engineParity = signal<ParityCheckResult | null>(null);
-  readonly engineValidation = signal<ValidationResult | null>(null);
-  readonly engineResearchBusy = signal(false);
-  readonly engineResearchError = signal<string | null>(null);
-  /** Protected-level lines, kept apart from the S/R lines so either can clear alone. */
-  private engineLines: IPriceLine[] = [];
-
   /* --- level rejection ------------------------------------------------ */
   /**
    * The previous-day level rejection overlay: levels, 5M rejections, 1M
@@ -1598,6 +1454,59 @@ export class ChartStreamComponent {
   readonly levelRejectionLoading = signal(false);
   readonly levelRejectionError = signal<string | null>(null);
   private levelRejectionLines: IPriceLine[] = [];
+
+  /* --- trend ---------------------------------------------------------- */
+  /**
+   * The structure-first trend on every timeframe, from the session endpoint —
+   * bounded by the session's clock server-side, and refreshed as each bar
+   * closes. The candles show the swings and breaks of one timeframe, the
+   * *focus*: the one matching the bar on screen unless the user picked another
+   * in the panel.
+   */
+  readonly trend = signal<TrendResult | null>(null);
+  readonly showTrend = signal(false);
+  readonly trendLoading = signal(false);
+  readonly trendError = signal<string | null>(null);
+  /** The user's pick in the panel; `null` follows the chart's bar size. */
+  private readonly trendFocusChoice = signal<TrendTimeframe | null>(null);
+  private trendPriceLines: IPriceLine[] = [];
+  /** One line series per drawn trendline, by the backend's line id. */
+  private readonly trendlineSeries = new Map<number, ISeriesApi<'Line'>>();
+  /** Ids of the trendlines drawn right now — the breaks a clean chart may mark. */
+  private trendDrawnLines = new Set<number>();
+  /** Clean by default: the current structure, not every swing ever printed. */
+  readonly trendDetail = signal<TrendDetail>('clean');
+  private trendRequest: Subscription | null = null;
+  /** A new bar closed while a request was out: ask once more when it lands. */
+  private trendMoved = false;
+  /** Which session and bar count the held reading answers. */
+  private trendFetchedFor: string | null = null;
+
+  readonly trendFocus = computed<TrendTimeframe | null>(
+    () =>
+      this.trendFocusChoice() ??
+      chartTimeframe(
+        this.displaySeconds(),
+        this.trend()?.timeframes.map((t) => t.timeframe) ?? DEFAULT_TREND_TIMEFRAMES,
+      ),
+  );
+
+  /** Whether the drawn timeframe follows the chart's bar size or was picked. */
+  readonly trendFocusIsAutomatic = computed(() => this.trendFocusChoice() === null);
+
+  readonly focusedTrend = computed<TimeframeTrend | null>(
+    () => this.trend()?.timeframes.find((t) => t.timeframe === this.trendFocus()) ?? null,
+  );
+
+  /**
+   * While replaying, the close of the newest bar on screen: the trend may show
+   * only what was known by then. `null` off replay. Keyed on `revision`
+   * because the drawn series is not itself a signal.
+   */
+  readonly trendKnownAt = computed<number | null>(() => {
+    this.revision();
+    return this.knownAtNow();
+  });
 
   readonly canStop = computed(
     () => this.session()?.status === 'RUNNING' || this.session()?.status === 'STARTING',
@@ -1714,21 +1623,6 @@ export class ChartStreamComponent {
     };
   });
 
-  /**
-   * The numbers the PDR bar shows: the newest day's range.
-   *
-   * The newest rather than all of them, for the same reason the S/R bar shows
-   * only the pair around price — the older days are already drawn *on* the
-   * chart, above their own bars, which is where a level belongs. What a header
-   * adds is the one set that applies to the session being watched now.
-   */
-  readonly previousDayBand = computed(() => {
-    const ranges = this.previousDayRanges();
-    const newest = ranges.at(-1);
-    if (!this.showPreviousDayRange() || !newest) return null;
-    return { ...newest, days: ranges.length };
-  });
-
   constructor() {
     effect(() => {
       const host = this.chartHost().nativeElement;
@@ -1784,7 +1678,7 @@ export class ChartStreamComponent {
       this.chart.subscribeCrosshairMove(this.onCrosshair);
       // Levels and trades can both arrive before the canvas exists — a session
       // started with `levels` publishes its first set within milliseconds of
-      // Start, and an instant replay finishes its whole simulation faster.
+      // Start, and paper trades can be fetched before the first bar arrives.
       this.drawLevels();
       this.drawMarkers();
       this.drawPaperLines();
@@ -1810,22 +1704,10 @@ export class ChartStreamComponent {
       untracked(() => this.start(request));
     });
 
-    // Marks follow both the trades and the timeframe, because a marker's time
-    // has to match a bar the chart is actually drawing — see `trade-markers.ts`.
+    // Paper trades move both the arrows, whose times must match a bar the chart
+    // is drawing (so they follow the timeframe too), and the entry/stop lines.
     effect(() => {
-      this.trades();
-      this.displaySeconds();
-      untracked(() => this.drawMarkers());
-    });
-
-    // Paper positions move both: the arrows, like any other mark, and the
-    // entry/stop/target lines, which nothing else on the chart draws. The
-    // lines are price-only and so do not depend on the interval — but the
-    // marks do, and they share this effect because a position changing has to
-    // republish both or the chart shows a stop line for a trade whose exit
-    // arrow is missing.
-    effect(() => {
-      this.paperPositions();
+      this.paperTrades();
       this.displaySeconds();
       untracked(() => {
         this.drawMarkers();
@@ -1905,7 +1787,7 @@ export class ChartStreamComponent {
 
     this.destroyRef.onDestroy(() => {
       this.emaSeries.clear();
-      this.pdrSeries.clear();
+      this.trendlineSeries.clear();
       this.vwapSeries = undefined;
       this.overlay.destroy();
       this.candleOverlay.destroy();
@@ -1984,32 +1866,21 @@ export class ChartStreamComponent {
     // And the candlestick boxes, for the same reason: they describe the bars
     // of the series that produced them.
     this.clearCandlePatterns();
-    // Same for the previous-day levels, which are per instrument *and* per
-    // date — see `pdrKey`.
-    this.clearPreviousDayRange();
-    // The overlay switches itself off for a new session rather than carrying
-    // over: it is enabled by a click and fetches when enabled, so carrying it
-    // across would annotate an instrument nobody asked about.
-    this.showPreviousDayRange.set(false);
-    this.removePdrSeries();
     // The request is what says whether this chart is annotated. Pressing S/R
     // afterwards still works either way — this only decides where it starts.
     this.showLevels.set(request?.levels !== undefined);
     // Never on by default: a retest is a completed label over history, not
     // something a chart needs the moment it opens.
     this.showRetests.set(false);
-    // Same for the engine, and its readings belong to the instrument and date
-    // that produced them — carrying them into a new session would describe one
-    // chart over another. The chart set survives, because it is a preference
-    // about how to read rather than a fact about this session.
-    this.showMarketEngine.set(false);
-    this.clearMarketEngine();
     // Levels and setups belong to the instrument and date that produced them.
     this.showLevelRejection.set(false);
     this.clearLevelRejection();
-    // The paper lines describe prices in the series being replaced. The
-    // positions themselves are the page's to keep or clear — this only stops
-    // the old instrument's levels being drawn over the new one's bars.
+    // The trend belongs to the instrument that produced it; the focus pick is
+    // about how that chart was being read.
+    this.showTrend.set(false);
+    this.trendFocusChoice.set(null);
+    this.clearTrend();
+    // The paper lines describe prices in the series being replaced.
     this.drawPaperLines();
     this.redraw();
   }
@@ -2035,11 +1906,6 @@ export class ChartStreamComponent {
         switch (event.type) {
           case 'CANDLE':
             this.buffer.add(event);
-            // Emitted before the redraw is even scheduled: the engine reasons
-            // on bars, not on pixels, and making it wait for a canvas would
-            // mean an instant replay finished simulating a different set of
-            // bars than it drew.
-            this.candle.emit(event);
             // Batched by the microtask below rather than redrawn per bar: an
             // instant replay delivers a whole day in one burst of frames, and
             // a `setData` per frame is hundreds of full redraws for one
@@ -2062,11 +1928,6 @@ export class ChartStreamComponent {
             break;
           case 'SESSION_COMPLETED':
           case 'SESSION_STOPPED':
-            // The feed is over, so nothing will ever mark an open paper
-            // position again. Saying so lets the page square it off at the
-            // last traded price rather than leaving a position that appears
-            // live but can never move or exit.
-            this.sessionEnded.emit();
             this.session.update((s) =>
               s
                 ? { ...s, status: event.type === 'SESSION_COMPLETED' ? 'COMPLETED' : 'STOPPED' }
@@ -2247,220 +2108,210 @@ export class ChartStreamComponent {
   }
 
   /**
-   * Shows or hides the multi-timeframe engine.
-   *
-   * Same economy as {@link toggleLevels} and {@link toggleRetests}: turning it
-   * on fetches only when nothing is held, so toggling twice costs one request,
-   * and turning it off keeps the last reading for an instant re-show.
-   *
-   * No interval check, unlike the retests. A reading is not bound to the bar
-   * size on screen — see {@link marketEngine} — so what is held stays valid
-   * when the chart switches timeframe.
+   * Shows or hides the trend. Turning it on fetches when nothing is held;
+   * turning it off keeps the reading for an instant re-show, and stops asking.
    */
-  toggleMarketEngine(): void {
-    const next = !this.showMarketEngine();
-    this.showMarketEngine.set(next);
-    if (!next) {
-      this.drawMarketEngine();
-      return;
-    }
-    if (this.marketEngine()) this.drawMarketEngine();
-    else this.refreshMarketEngine();
+  toggleTrend(): void {
+    const next = !this.showTrend();
+    this.showTrend.set(next);
+    this.drawTrend();
+    if (next) this.refreshTrend({ force: !this.trend() });
+  }
+
+  /** The panel picked a timeframe to draw; picking the automatic one follows the chart again. */
+  protected setTrendFocus(timeframe: TrendTimeframe): void {
+    const automatic = chartTimeframe(
+      this.displaySeconds(),
+      this.trend()?.timeframes.map((t) => t.timeframe) ?? DEFAULT_TREND_TIMEFRAMES,
+    );
+    this.trendFocusChoice.set(timeframe === automatic ? null : timeframe);
+    this.drawTrend();
   }
 
   /**
-   * Switches the cascade between 4H/1H and 125m/75m.
+   * Asks the session for its trend — once per newly closed bar.
    *
-   * Always a refetch, even when the engine is showing nothing: the chart set
-   * decides which bars the context and structure layers are built from, so the
-   * held reading describes a different pair of timeframes and cannot be reused.
+   * The session endpoint, not the standalone one, because the session's clock
+   * is what bounds the reading: a TEST replay part-way through a day is read as
+   * of that moment. At most one request is out; bars that close meanwhile are
+   * folded into a single follow-up, the same economy the candlestick overlay
+   * uses, so a fast replay cannot starve it and a live chart asks once a minute.
    */
-  protected setChartSet(chartSet: ChartSet): void {
-    if (this.chartSet() === chartSet) return;
-    this.chartSet.set(chartSet);
-    this.marketEngine.set(null);
-    if (this.showMarketEngine()) this.refreshMarketEngine();
-  }
-
-  /**
-   * Asks the session for the engine's reading of the bars it has published.
-   *
-   * The session endpoint rather than the standalone one, and here the reason is
-   * sharper than it is for levels or retests: the session's own clock is what
-   * bounds the reading. A `TEST` replay part-way through a day must be read as
-   * of that moment, and the standalone endpoint — which knows only a date —
-   * would hand back the whole day, afternoon included.
-   */
-  private refreshMarketEngine(): void {
+  private refreshTrend(options: { force?: boolean } = {}): void {
+    if (!this.showTrend()) return;
     const sessionId = this.session()?.sessionId;
     if (!sessionId) return;
 
-    this.marketEngineError.set(null);
-    this.marketEngineLoading.set(true);
-    this.api
-      .sessionMarketEngine(sessionId, {
-        chartSet: this.chartSet(),
-        roundNumberStep: this.roundNumberStep(),
-      } satisfies SessionMarketEngineQuery)
+    const key = `${sessionId}|${this.buffer.size}`;
+    if (!options.force && key === this.trendFetchedFor) return;
+    if (this.trendRequest) {
+      this.trendMoved = true;
+      return;
+    }
+
+    this.trendFetchedFor = key;
+    this.trendLoading.set(true);
+    this.trendRequest = this.api
+      .sessionTrend(sessionId, { timeframes: DEFAULT_TREND_TIMEFRAMES.join(',') })
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (result) => {
-          this.marketEngineLoading.set(false);
-          this.marketEngine.set(result);
-          this.marketEngineError.set(null);
-          this.drawMarketEngine();
+          this.trendRequest = null;
+          this.trendLoading.set(false);
+          this.trend.set(result);
+          this.trendError.set(null);
+          this.drawTrend();
+          this.trendFollowUp();
         },
         error: (e: ChartStreamError) => {
-          this.marketEngineLoading.set(false);
-          // Its own line, like the other two: no reading is a chart without
-          // annotations, not a chart whose bars are wrong.
-          this.marketEngineError.set(`Market engine unavailable — ${describe(e)}`);
+          this.trendRequest = null;
+          this.trendLoading.set(false);
+          // Its own line: no trend is a chart without an annotation, not a
+          // chart whose bars are wrong.
+          this.trendError.set(`Trend unavailable — ${describe(e)}`);
+          this.trendFollowUp();
         },
       });
   }
 
-  /**
-   * The round-number step the engine should place reference levels on.
-   *
-   * 100 for BANKNIFTY, 50 otherwise. Derived from the request rather than
-   * configured, because there is exactly one right answer per instrument and
-   * asking the user for it would be asking them to know the backend's
-   * confluence rule.
-   */
-  private roundNumberStep(): number {
-    return this.request()?.instrument.underlying === 'BANKNIFTY' ? 100 : 50;
-  }
-
-  private clearMarketEngine(): void {
-    this.marketEngine.set(null);
-    this.marketEngineError.set(null);
-    // Research results belong to the instrument and date that produced them,
-    // exactly like the readings.
-    this.engineIngest.set(null);
-    this.engineParity.set(null);
-    this.engineValidation.set(null);
-    this.engineResearchError.set(null);
-    this.drawMarketEngine();
+  private trendFollowUp(): void {
+    if (!this.trendMoved) return;
+    this.trendMoved = false;
+    this.refreshTrend();
   }
 
   /**
-   * The body every research endpoint takes, built from the chart's own request.
-   *
-   * `null` without a request, because the research actions are about the
-   * instrument and date on screen and there is nothing sensible to default to.
+   * The focus timeframe's lines: its protected swing, a broken level while it
+   * is transitioning, a range's edges, the nearest support and resistance,
+   * and its trendline. Swings and events go through the shared marker plugin.
    */
-  private researchRequest(): (MarketEngineResearchRequest & { date?: string }) | null {
-    const request = this.request();
-    if (!request) return null;
+  private drawTrend(): void {
+    const series = this.candles;
+    if (!series || !this.chart) return;
+
+    for (const line of this.trendPriceLines) series.removePriceLine(line);
+    this.trendPriceLines = [];
+
+    const focus = this.showTrend() ? this.focusedTrend() : null;
+    const knownAt = this.knownAtNow();
+    for (const line of trendLines(focus, knownAt, this.trendDetail())) {
+      this.trendPriceLines.push(
+        series.createPriceLine({
+          price: line.price,
+          color: line.color,
+          lineWidth: line.width,
+          lineStyle:
+            line.style === 'solid'
+              ? LineStyle.Solid
+              : line.style === 'dashed'
+                ? LineStyle.Dashed
+                : LineStyle.Dotted,
+          lineVisible: true,
+          axisLabelVisible: line.axisLabel,
+          title: line.title,
+          axisLabelColor: '',
+          axisLabelTextColor: '',
+        }),
+      );
+    }
+
+    // Trendlines: one two-point series each, reused by id, so a line that is
+    // still active only has its end moved as bars arrive.
+    const segments = trendlineSegments(
+      focus,
+      this.displaySeconds(),
+      knownAt,
+      this.trendDetail(),
+      this.chartAxis(),
+    );
+    const keep = new Set(segments.map((s) => s.id));
+    this.trendDrawnLines = keep;
+    for (const [id, line] of this.trendlineSeries) {
+      if (keep.has(id)) continue;
+      this.chart.removeSeries(line);
+      this.trendlineSeries.delete(id);
+    }
+    for (const segment of segments) {
+      const colour = segment.kind === 'RESISTANCE' ? THEME.down : THEME.up;
+      const options = {
+        color: fade(colour, segment.broken ? 0.55 : 0.9),
+        lineWidth: 2 as const,
+        lineStyle: segment.broken ? LineStyle.Dashed : LineStyle.Solid,
+      };
+      let line = this.trendlineSeries.get(segment.id);
+      if (line) line.applyOptions(options);
+      else {
+        line = this.chart.addSeries(LineSeries, {
+          ...options,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+        });
+        this.trendlineSeries.set(segment.id, line);
+      }
+      line.setData(segment.points);
+    }
+
+    this.drawMarkers();
+  }
+
+  /** Bar positions of the drawn series, for lines drawn in bar space. */
+  private chartAxis(): ChartAxis | null {
+    const bars = this.drawn;
+    const first = bars[0];
+    const last = bars.at(-1);
+    if (!first || !last) return null;
     return {
-      instrument: request.instrument,
-      date: request.date,
-      chartSet: this.chartSet(),
-      roundNumberStep: this.roundNumberStep(),
+      firstSec: first.time as number,
+      lastSec: last.time as number,
+      indexOf: (sec: number) => {
+        let lo = 0;
+        let hi = bars.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (((bars[mid] as Bar).time as number) <= sec) lo = mid;
+          else hi = mid - 1;
+        }
+        return lo;
+      },
     };
   }
 
-  /** Appends this instrument's engine events to the stored log. */
-  protected storeEngineEvents(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    this.runResearch(this.api.ingestEngineEvents(body), (result) => this.engineIngest.set(result));
+  /** Clean or detailed — only what is drawn changes, not what is fetched. */
+  protected setTrendDetail(detail: TrendDetail): void {
+    this.trendDetail.set(detail);
+    this.drawTrend();
   }
 
-  /**
-   * Replays the chart's session and diffs it against the stored log.
-   *
-   * Needs a date: parity is about one session. On a LIVE chart there is none on
-   * the request, so today is used — the session actually being drawn.
-   */
-  protected checkEngineParity(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    const date = body.date ?? new Date().toISOString().slice(0, 10);
-    this.runResearch(this.api.checkEngineParity({ ...body, date }), (result) =>
-      this.engineParity.set(result),
+  private clearTrend(): void {
+    this.trendRequest?.unsubscribe();
+    this.trendRequest = null;
+    this.trendMoved = false;
+    this.trendFetchedFor = null;
+    this.trend.set(null);
+    this.trendError.set(null);
+    this.trendLoading.set(false);
+    this.drawTrend();
+  }
+
+  /** See {@link trendKnownAt}. */
+  private knownAtNow(): number | null {
+    if (this.playbackUntilMs() === null) return null;
+    const last = this.lastBarTime();
+    return last === null ? null : (last + this.displaySeconds()) * 1000;
+  }
+
+  /** The trend events on the hovered bar, explained for the hover card. */
+  readonly trendNotes = computed<MarkNote[]>(() => {
+    const bar = this.hovered();
+    if (!bar || !this.showTrend()) return [];
+    return eventNotesAtBar(
+      this.focusedTrend(),
+      this.displaySeconds(),
+      bar.time as number,
+      this.trendKnownAt(),
     );
-  }
-
-  /** Forward behaviour of every label, over the longest window the backend allows. */
-  protected runEngineValidation(): void {
-    const body = this.researchRequest();
-    if (!body) return;
-    this.runResearch(this.api.validateEngine(body), (result) => this.engineValidation.set(result));
-  }
-
-  /** One busy flag and one error line for all three actions. */
-  private runResearch<T>(source: Observable<T>, apply: (result: T) => void): void {
-    this.engineResearchError.set(null);
-    this.engineResearchBusy.set(true);
-    source.pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
-      next: (result) => {
-        this.engineResearchBusy.set(false);
-        apply(result);
-      },
-      error: (e: ChartStreamError) => {
-        this.engineResearchBusy.set(false);
-        this.engineResearchError.set(describe(e));
-      },
-    });
-  }
-
-  /**
-   * Puts the engine's protected levels on the chart and republishes the marks.
-   *
-   * Protected levels are lines rather than marks because the *price* is the
-   * whole point of one — a mark cannot say a price — and there are at most
-   * three, which stays legible. Everything else the engine says is a mark or
-   * lives in the panel.
-   */
-  private drawMarketEngine(): void {
-    const series = this.candles;
-    if (!series) return;
-
-    for (const line of this.engineLines) series.removePriceLine(line);
-    this.engineLines = [];
-
-    if (this.showMarketEngine()) {
-      const latest = this.marketEngine()?.readings.at(-1) ?? null;
-      for (const line of protectedLines(latest)) {
-        this.engineLines.push(
-          series.createPriceLine({
-            price: line.price,
-            color: fade(line.bullish ? THEME.up : THEME.down, 0.75),
-            lineWidth: 2,
-            lineStyle: LineStyle.Solid,
-            lineVisible: true,
-            axisLabelVisible: true,
-            title: line.title,
-            axisLabelColor: '',
-            axisLabelTextColor: '',
-          }),
-        );
-      }
-
-      // Zone edges: thin, dotted and unlabelled on the axis, so they never
-      // compete with the protected levels for the price scale.
-      for (const edge of zoneLines(latest)) {
-        this.engineLines.push(
-          series.createPriceLine({
-            price: edge.price,
-            color: fade(edge.bullish ? THEME.up : THEME.down, edge.spent ? 0.25 : 0.5),
-            lineWidth: 1,
-            lineStyle: LineStyle.Dotted,
-            lineVisible: true,
-            axisLabelVisible: false,
-            title: edge.title,
-            axisLabelColor: '',
-            axisLabelTextColor: '',
-          }),
-        );
-      }
-    }
-
-    // The engine shares the one marker plugin with trades and retests, so
-    // either changing means re-publishing all three.
-    this.drawMarkers();
-  }
+  });
 
   private applyRetests(result: ChartRetests): void {
     this.retests.set(result.retests);
@@ -2513,16 +2364,12 @@ export class ChartStreamComponent {
   }
 
   /**
-   * Draws the entry, stop and target of every live paper position.
+   * Draws the entry and stop-loss of every open paper position.
    *
-   * Price lines rather than marks because a *level* is the whole point: a mark
-   * can say "a stop is set" but cannot say where, and where is the only thing
-   * worth drawing. They are torn down and rebuilt rather than diffed, like the
-   * S/R lines and for the same reason — at most a handful of lines, the rebuild
-   * is cheaper than the bookkeeping a correct diff would need.
-   *
-   * Only live positions contribute, so a chart does not accumulate the levels
-   * of every trade of the day; the exit arrow is the record of a closed one.
+   * Price lines rather than marks because the level is the point: a mark can
+   * say "a stop is set" but not where. Torn down and rebuilt rather than
+   * diffed, like the S/R lines — at most a handful, so the rebuild is cheaper
+   * than a correct diff. Closed trades keep only their arrows.
    */
   private drawPaperLines(): void {
     const series = this.candles;
@@ -2531,12 +2378,12 @@ export class ChartStreamComponent {
     for (const line of this.paperLines) series.removePriceLine(line);
     this.paperLines = [];
 
-    for (const spec of paperPriceLines(this.paperPositions())) {
+    for (const spec of paperPriceLines(this.paperTrades())) {
       this.paperLines.push(
         series.createPriceLine({
           price: spec.price,
           color: spec.colour,
-          lineWidth: spec.width,
+          lineWidth: 1,
           lineStyle: spec.dashed ? LineStyle.Dashed : LineStyle.Solid,
           lineVisible: true,
           axisLabelVisible: true,
@@ -2552,11 +2399,11 @@ export class ChartStreamComponent {
   private paperLines: IPriceLine[] = [];
 
   /**
-   * Draws the simulation's entry and exit arrows.
+   * Draws every mark: paper trades, retests, level rejections and trend.
    *
-   * A whole replacement set every time, like the levels: the run publishes its
-   * complete trade list on every frame, and a chart that tried to append would
-   * duplicate every mark the first time a socket reconnected.
+   * A whole replacement set every time, like the levels: the paper trades
+   * arrive as a complete list on every refresh, and a chart that tried to
+   * append would duplicate every mark.
    */
   private drawMarkers(): void {
     if (!this.markers) return;
@@ -2590,23 +2437,23 @@ export class ChartStreamComponent {
   chartMarkers(): SeriesMarker<UTCTimestamp>[] {
     const seconds = this.displaySeconds();
     const retests = this.showRetests() ? retestMarkers(this.retests(), seconds) : [];
-    const engine =
-      this.showMarketEngine() && this.marketEngine()
-        ? marketStateMarkers(this.marketEngine()?.readings ?? [], seconds)
-        : [];
     // Clipped to the drawn bars: a mark with no bar of its own is pinned to the
-    // nearest one by the chart, which stacked ten days of engine history on the
-    // first candle.
+    // nearest one by the chart, which stacked ten days of history on the first
+    // candle.
     return withinSeries(
       mergeMarkers(
-        markersFor(this.trades(), seconds),
-        // The paper book's own entries and exits. A fourth source rather than
-        // a merge with `trades`: the two describe different books, and a user
-        // running both must be able to tell which arrow was theirs.
-        paperMarkers(this.paperPositions(), seconds),
+        paperMarkers(this.paperTrades(), seconds),
         retests,
-        engine,
         this.levelRejectionMarks(),
+        this.showTrend()
+          ? trendMarkers(
+              this.focusedTrend(),
+              this.displaySeconds(),
+              this.knownAtNow(),
+              this.trendDetail(),
+              this.trendDrawnLines,
+            )
+          : [],
       ),
       this.firstBarTime(),
       // Only while replaying. On a normal chart the newest drawn bar is the
@@ -2615,17 +2462,6 @@ export class ChartStreamComponent {
       this.playbackUntilMs() === null ? null : this.lastBarTime(),
     );
   }
-
-  /**
-   * The engine marks on the hovered bar, explained — what the hover card adds
-   * beneath the prices. Empty when the engine is off or the bar carries no mark.
-   */
-  readonly engineNotes = computed<MarkNote[]>(() => {
-    const bar = this.hovered();
-    const engine = this.marketEngine();
-    if (!bar || !engine || !this.showMarketEngine()) return [];
-    return marksAtBar(engine.readings, this.displaySeconds(), bar.time as number).map(explainMark);
-  });
 
   /** The backend's name for the bar size on screen. */
   private intervalName(): ChartInterval {
@@ -2699,10 +2535,15 @@ export class ChartStreamComponent {
     this.refreshCandlePatterns();
     this.drawEmas();
     this.drawVwap();
-    this.drawPreviousDayRange();
     // Its marks stop at the newest drawn bar, so a replay that grows must
     // re-publish them or the entry it has just reached stays hidden.
     if (this.showLevelRejection()) this.drawLevelRejection();
+    // Re-bucketed to the bars just drawn, clipped to a replay's cursor, and
+    // re-asked once per newly closed bar.
+    if (this.showTrend()) {
+      this.drawTrend();
+      this.refreshTrend();
+    }
   }
 
   /**
@@ -2958,9 +2799,8 @@ export class ChartStreamComponent {
     () =>
       (this.showLevels() ? 1 : 0) +
       (this.showRetests() ? 1 : 0) +
-      (this.showMarketEngine() ? 1 : 0) +
-      (this.showPreviousDayRange() ? 1 : 0) +
       (this.showLevelRejection() ? 1 : 0) +
+      (this.showTrend() ? 1 : 0) +
       (this.showPatterns() ? 1 : 0) +
       (this.showCandlePatterns() ? 1 : 0),
   );
@@ -2976,9 +2816,8 @@ export class ChartStreamComponent {
     () =>
       this.levelsLoading() ||
       this.retestsLoading() ||
-      this.marketEngineLoading() ||
-      this.pdrLoading() ||
       this.levelRejectionLoading() ||
+      this.trendLoading() ||
       this.candlePatternsLoading(),
   );
 
@@ -2993,9 +2832,8 @@ export class ChartStreamComponent {
   protected clearOverlays(): void {
     if (this.showLevels()) this.toggleLevels();
     if (this.showRetests()) this.toggleRetests();
-    if (this.showMarketEngine()) this.toggleMarketEngine();
-    if (this.showPreviousDayRange()) this.togglePreviousDayRange();
     if (this.showLevelRejection()) this.toggleLevelRejection();
+    if (this.showTrend()) this.toggleTrend();
     if (this.showPatterns()) this.togglePatterns();
     if (this.showCandlePatterns()) this.toggleCandlePatterns();
   }
@@ -3282,138 +3120,6 @@ export class ChartStreamComponent {
     return levelRejectionMarkers(result.result.setups, seconds, (last + seconds) * 1000);
   }
 
-  togglePreviousDayRange(): void {
-    const next = !this.showPreviousDayRange();
-    this.showPreviousDayRange.set(next);
-
-    if (!next) {
-      this.removePdrSeries();
-      return;
-    }
-
-    this.addPdrSeries();
-    if (this.pdrFetchedFor === this.pdrKey()) this.drawPreviousDayRange();
-    else this.fetchPreviousDayRange();
-  }
-
-  /**
-   * What a held set of ranges belongs to.
-   *
-   * The date is part of it, not only the instrument: the same option replayed
-   * on two different days has two different previous days, and a key that
-   * ignored the date would reuse the first day's levels on the second.
-   */
-  private pdrKey(): string | null {
-    const request = this.request();
-    if (!request) return null;
-    const { type, underlying, strike, expiry } = request.instrument;
-    return [type, underlying, strike ?? '', expiry ?? '', request.date ?? 'live'].join('|');
-  }
-
-  /**
-   * Asks the backend for one range per trading day this chart can show.
-   *
-   * `historyDays + 1` because the session's own day needs a range too, and the
-   * prior days drawn behind it each need their own — a multi-day chart where
-   * only the newest session is annotated is the bug this argument exists to
-   * avoid.
-   */
-  private fetchPreviousDayRange(): void {
-    const request = this.request();
-    const key = this.pdrKey();
-    if (!request || key === null) return;
-
-    this.pdrError.set(null);
-    this.pdrLoading.set(true);
-    this.api
-      .previousDayRange({
-        instrument: request.instrument,
-        // Omitted for LIVE, where the backend's "today" is the right anchor
-        // and the browser's clock is not necessarily the exchange's.
-        ...(request.date === undefined ? {} : { date: request.date }),
-        lookbackDays: (request.historyDays ?? 0) + 1,
-      })
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (result) => {
-          this.pdrLoading.set(false);
-          this.pdrFetchedFor = key;
-          this.previousDayRanges.set(result.ranges);
-          this.drawPreviousDayRange();
-        },
-        error: (e: ChartStreamError) => {
-          this.pdrLoading.set(false);
-          // Its own line rather than `error`: no previous-day lines is a
-          // chart without an annotation, not a chart that is wrong about
-          // its bars. No fallback is attempted — the only other source
-          // available aggregates intraday bars, and on an option that
-          // disagrees with the exchange daily candle by far more than a
-          // tick.
-          this.pdrError.set(`Previous day range unavailable — ${describe(e)}`);
-        },
-      });
-  }
-
-  private addPdrSeries(): void {
-    if (!this.chart) return;
-    for (const line of PDR_LINES) {
-      if (this.pdrSeries.has(line)) continue;
-      const style = PDR_STYLE[line];
-      this.pdrSeries.set(
-        line,
-        this.chart.addSeries(LineSeries, {
-          color: PDR_COLOR,
-          lineWidth: style.width,
-          lineStyle: style.dashed ? LineStyle.Dashed : LineStyle.Solid,
-          // Flat across each day, vertical at the boundary — see the module.
-          lineType: PDR_LINE_TYPE,
-          // The label the requirement asks for: the title rides on the price
-          // scale beside the value, so the line reads "PDH 22,450.00" against
-          // the axis rather than needing a legend.
-          title: style.title,
-          lastValueVisible: true,
-          priceLineVisible: false,
-          crosshairMarkerVisible: false,
-        }),
-      );
-    }
-  }
-
-  private removePdrSeries(): void {
-    for (const series of this.pdrSeries.values()) this.chart?.removeSeries(series);
-    this.pdrSeries.clear();
-  }
-
-  /**
-   * Redraws the three lines over the bars on screen.
-   *
-   * Re-derived from `drawn` on every redraw rather than set once, because the
-   * *placement* follows the bars even though the values do not: changing the
-   * display interval re-buckets the x axis, and a series still holding
-   * one-minute times would draw its levels against bars that are no longer
-   * there.
-   */
-  private drawPreviousDayRange(): void {
-    if (!this.pdrSeries.size) return;
-    const lines = previousDayRangeLines(this.drawn, this.previousDayRanges());
-    for (const [line, series] of this.pdrSeries) {
-      series.setData(
-        lines[line].map((point) => ({
-          time: point.time as UTCTimestamp,
-          ...(point.value === undefined ? {} : { value: point.value }),
-        })),
-      );
-    }
-  }
-
-  private clearPreviousDayRange(): void {
-    this.previousDayRanges.set([]);
-    this.pdrFetchedFor = null;
-    this.pdrError.set(null);
-    this.pdrLoading.set(false);
-    this.drawPreviousDayRange();
-  }
-
   /** Shows or hides the overlay, and remembers which. */
   togglePatterns(): void {
     const next = !this.showPatterns();
@@ -3507,7 +3213,7 @@ export class ChartStreamComponent {
     // is wider and taller, so it flips sooner and is pinned to the top of the
     // chart, where it has the most room to grow down.
     const width = this.chartHost().nativeElement.clientWidth;
-    const explained = this.engineNotes().length > 0;
+    const explained = this.trendNotes().length > 0;
     const cardWidth = explained ? 300 : 156;
     const flip = point.x > width - cardWidth - 14;
     this.tooltipAt.set({

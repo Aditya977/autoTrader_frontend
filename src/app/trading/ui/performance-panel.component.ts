@@ -87,7 +87,7 @@ type Period = 'daily' | 'weekly' | 'monthly';
         <p class="empty">No closed trades in this range.</p>
       } @else {
         <div class="table-wrap">
-          <table>
+          <table class="data">
             <thead>
               <tr>
                 <th>{{ periodLabel() }}</th>
@@ -200,30 +200,6 @@ type Period = 'daily' | 'weekly' | 'monthly';
     .empty {
       color: var(--text-muted);
       font-size: 0.8rem;
-    }
-    .table-wrap {
-      overflow-x: auto;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.78rem;
-    }
-    th,
-    td {
-      padding: 0.4rem 0.55rem;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      white-space: nowrap;
-    }
-    th {
-      color: var(--text-muted);
-      font-weight: 500;
-    }
-    .num {
-      text-align: right;
-      font-family: var(--font-mono);
-      font-variant-numeric: tabular-nums;
     }
   `,
 })

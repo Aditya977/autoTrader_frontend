@@ -121,7 +121,6 @@ describe('chart panel header layout', () => {
     // Everything that used to be its own button on the header, plus the
     // indicators that were already behind a menu.
     expect(names).toContain('Support & resistance');
-    expect(names).toContain('Previous day range');
     expect(names).toContain('Chart patterns');
     expect(names).toContain('Candlesticks');
     expect(names).toContain('VWAP');

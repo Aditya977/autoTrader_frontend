@@ -11,23 +11,13 @@ import type {
   InstrumentRequest,
   LevelsRequest,
   OptionChain,
-  PreviousDayRangeRequest,
-  PreviousDayRangeResponse,
   ResolvedInstrument,
   RetestsRequest,
   SessionLevelsQuery,
   SessionRetestsQuery,
   StartStreamRequest,
 } from './chart-stream.models';
-import type {
-  EventLogIngestResult,
-  MarketEngineRequest,
-  MarketEngineResearchRequest,
-  MarketEngineResult,
-  ParityCheckResult,
-  SessionMarketEngineQuery,
-  ValidationResult,
-} from '../market-engine/market-engine.models';
+import type { SessionTrendQuery, TrendRequest, TrendResult } from '../trend/trend.models';
 import type {
   LevelRejectionRequest,
   LevelRejectionResponse,
@@ -190,93 +180,26 @@ export class ChartStreamApiService {
   }
 
   /**
-   * The multi-timeframe engine's reading of an instrument.
-   *
-   * The third member of the {@link levels}/{@link retests} family and asked the
-   * same way, with one difference worth noticing: no `interval`. Levels and
-   * retests are found *on* the bar size the chart is drawing; the engine reads
-   * five timeframes at once by definition, and `chartSet` picks which five.
+   * The trend on every requested timeframe — direction, strength, phase,
+   * structure, breaks and reversals — with no session needed.
    */
-  marketEngine(request: MarketEngineRequest): Observable<MarketEngineResult> {
+  trend(request: TrendRequest): Observable<TrendResult> {
     return this.http
-      .post<MarketEngineResult>(`${this.base}/streamer/stream/market-engine`, request)
+      .post<TrendResult>(`${this.base}/streamer/stream/trend`, request)
       .pipe(catchError(this.unwrap));
   }
 
   /**
-   * The same reading, over the bars **this session has published**.
-   *
-   * Bounded by the session's own clock server-side, which for this endpoint is
-   * the whole guarantee rather than a nicety: a replay half way through a day
-   * must be read as of that moment, not with the afternoon it has not reached.
+   * The same, over the bars **this session has published**, bounded by the
+   * session's own clock server-side — so a replay is read as of where it is.
    */
-  sessionMarketEngine(
-    sessionId: string,
-    query: SessionMarketEngineQuery = {},
-  ): Observable<MarketEngineResult> {
-    // Only the fields actually set, for the same reason as `sessionLevels`:
-    // every one has a backend default, and an `undefined` serialised as the
-    // string "undefined" is a 400.
+  sessionTrend(sessionId: string, query: SessionTrendQuery = {}): Observable<TrendResult> {
     const params: Record<string, string> = {};
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== null) params[key] = String(value);
     }
-
     return this.http
-      .get<MarketEngineResult>(`${this.base}/streamer/stream/${sessionId}/market-engine`, {
-        params,
-      })
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * Walks a window and appends its engine events to the stored log.
-   *
-   * Idempotent server-side: event ids are content hashes, so pressing this
-   * twice on the same session writes nothing the second time.
-   */
-  ingestEngineEvents(request: MarketEngineResearchRequest): Observable<EventLogIngestResult> {
-    return this.http
-      .post<EventLogIngestResult>(`${this.base}/streamer/stream/market-engine/log`, request)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * Replays one session and diffs it against the stored log.
-   *
-   * `date` is required: parity is a statement about one session, and the
-   * backend refuses to default it rather than pass silently on an empty day.
-   */
-  checkEngineParity(
-    request: MarketEngineResearchRequest & { date: string },
-  ): Observable<ParityCheckResult> {
-    return this.http
-      .post<ParityCheckResult>(`${this.base}/streamer/stream/market-engine/parity`, request)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * Forward behaviour of every engine label against a time-of-day matched
-   * baseline. Slow on purpose — it walks a long window.
-   */
-  validateEngine(
-    request: MarketEngineResearchRequest & { seed?: number },
-  ): Observable<ValidationResult> {
-    return this.http
-      .post<ValidationResult>(`${this.base}/streamer/stream/market-engine/validate`, request)
-      .pipe(catchError(this.unwrap));
-  }
-
-  /**
-   * PDH/PDL/mid per trading day, from each day's actual 1D candle.
-   *
-   * Session-independent like {@link levels}, and fetched once rather than
-   * watched: the numbers come from days that have already closed, so nothing
-   * about them can change while the chart is open.
-   */
-  previousDayRange(request: PreviousDayRangeRequest): Observable<PreviousDayRangeResponse> {
-    return this.http
-      .post<PreviousDayRangeResponse>(`${this.base}/streamer/stream/previous-day-range`, request)
+      .get<TrendResult>(`${this.base}/streamer/stream/${sessionId}/trend`, { params })
       .pipe(catchError(this.unwrap));
   }
 

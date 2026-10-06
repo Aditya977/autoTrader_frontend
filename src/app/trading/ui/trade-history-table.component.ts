@@ -15,7 +15,7 @@ import type { DashboardTrade } from '../trading.models';
       <p class="empty">{{ emptyText() }}</p>
     } @else {
       <div class="table-wrap">
-        <table>
+        <table class="data">
           <thead>
             <tr>
               <th>Entry (IST)</th>
@@ -81,40 +81,15 @@ import type { DashboardTrade } from '../trading.models';
       font-size: 0.8rem;
     }
     .table-wrap {
-      overflow-x: auto;
       max-height: 32rem;
       overflow-y: auto;
     }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.75rem;
-    }
-    th,
     td {
-      padding: 0.4rem 0.55rem;
-      border-bottom: 1px solid var(--border);
-      text-align: left;
-      white-space: nowrap;
       vertical-align: top;
     }
     th {
       position: sticky;
       top: 0;
-      background: var(--surface);
-      color: var(--text-muted);
-      font-weight: 500;
-    }
-    .num {
-      text-align: right;
-      font-family: var(--font-mono);
-      font-variant-numeric: tabular-nums;
-    }
-    .pos {
-      color: var(--up);
-    }
-    .neg {
-      color: var(--down);
     }
     .status {
       font-size: 0.68rem;

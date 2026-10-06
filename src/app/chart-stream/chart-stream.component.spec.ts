@@ -14,7 +14,7 @@ import type {
   StartStreamRequest,
   SupportResistanceLevel,
 } from './chart-stream.models';
-import type { SimTrade } from '../strategy/strategy.models';
+import type { ChartPaperTrade } from './paper-trade-overlay';
 
 @Component({
   standalone: true,
@@ -22,7 +22,7 @@ import type { SimTrade } from '../strategy/strategy.models';
   template: `<app-chart-stream
     [request]="request()"
     [sessionId]="sessionId()"
-    [trades]="trades()"
+    [paperTrades]="paperTrades()"
     [label]="label()"
     [leg]="leg()"
     [displaySeconds]="displaySeconds()"
@@ -32,7 +32,7 @@ class HostComponent {
   readonly chart = viewChild.required(ChartStreamComponent);
   readonly request = signal<StartStreamRequest | null>(null);
   readonly sessionId = signal<string | null>(null);
-  readonly trades = signal<readonly SimTrade[]>([]);
+  readonly paperTrades = signal<readonly ChartPaperTrade[]>([]);
   readonly label = signal('NIFTY 24350 CE');
   readonly leg = signal<'CE' | 'PE' | null>('CE');
   readonly displaySeconds = signal(60);
@@ -965,36 +965,21 @@ describe('ChartStreamComponent retests', () => {
   });
 
   it('keeps the trade arrows when retests are drawn', async () => {
-    const trade: SimTrade = {
-      id: 1,
-      strategyId: 'strat-1',
-      instrumentKey: 'NSE_FO|54321',
-      tradingsymbol: 'NIFTY24AUG24350CE',
+    const trade: ChartPaperTrade = {
+      tradeId: 'PAPER-1',
+      strategyName: 'FibMo v2',
       side: 'BUY',
-      status: 'CLOSED',
-      quantity: 75,
       lots: 1,
-      lotSize: 75,
-      entryTime: OPEN_MS + 20 * MINUTE,
+      entryAt: OPEN_MS + 20 * MINUTE,
       entryPrice: 100,
-      entryReason: 'signal',
-      stopPrice: null,
-      targetPrice: null,
-      exitTime: OPEN_MS + 25 * MINUTE,
+      stopLoss: 92,
+      exitAt: OPEN_MS + 25 * MINUTE,
       exitPrice: 110,
-      exitReason: 'target',
-      exitReasonKind: 'TARGET',
-      grossPnl: 750,
-      costs: 50,
       netPnl: 700,
-      netPnlPct: 10,
-      mae: -20,
-      mfe: 800,
-      barsHeld: 5,
-      features: {},
+      exitReason: 'TARGET',
     };
 
-    host.trades.set([trade]);
+    host.paperTrades.set([trade]);
     startSession(REQUEST);
     retestsButton().click();
     fixture.detectChanges();
@@ -1002,7 +987,7 @@ describe('ChartStreamComponent retests', () => {
     await settle();
 
     // One plugin holds one list, so publishing the retest marks on their own
-    // would silently erase the strategy's entry and exit arrows.
+    // would silently erase the paper trade's entry and exit arrows.
     const marks = host.chart().chartMarkers();
     // Entry, exit, and one mark for the retest — not one per timestamp on it.
     expect(marks.length).toBe(3);

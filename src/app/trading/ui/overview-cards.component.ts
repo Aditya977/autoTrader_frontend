@@ -80,7 +80,10 @@ export class OverviewCardsComponent {
         label: 'Available balance',
         value: money(o.availableBalance),
         tone: 'flat',
-        hint: o.liveSessionId ? 'live account' : `of ${money(o.capital)} capital`,
+        hint:
+          o.capital > 0
+            ? `of ${money(o.capital)} ${o.paperSessionId ? 'allocated' : 'capital'}`
+            : undefined,
       },
       {
         label: "Today's P&L",

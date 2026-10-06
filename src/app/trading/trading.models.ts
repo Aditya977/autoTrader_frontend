@@ -1,31 +1,29 @@
 /**
  * The Trading Dashboard's wire types — mirrors of the backend's
- * `/strategy/live`, `/strategy/backtest` and `/strategy/dashboard` responses.
+ * `/strategy/paper`, `/strategy/backtest` and `/strategy/dashboard` responses.
  *
  * Times are epoch milliseconds unless a field says ISO. Money is rupees, net of
  * the modelled brokerage (₹40 flat on the sell order).
  */
 
 import type { InstrumentRequest } from '../chart-stream/chart-stream.models';
+import type { StrategyDescriptor } from '../strategy/strategy.models';
 
-export type TradeMode = 'LIVE' | 'BACKTEST';
+/** `PAPER`: paper trading on the live feed. `BACKTEST`: runs over history. */
+export type TradeMode = 'PAPER' | 'BACKTEST';
 
-/** One instrument to trade, as the start and backtest requests carry it. */
+/** One instrument to backtest. */
 export interface TradingInstrument {
   instrument: InstrumentRequest;
   /** Only for a contract that trades on margin; a bought option pays in full. */
   marginPerLot?: number;
 }
 
-export interface StartLiveTradingRequest {
+export interface RunBacktestRequest {
   strategyId: string;
-  params?: Record<string, number>;
   capital: number;
   maxCapitalPerTrade?: number;
   instruments: TradingInstrument[];
-}
-
-export interface RunBacktestRequest extends StartLiveTradingRequest {
   from: string;
   to: string;
   label?: string;
@@ -87,7 +85,7 @@ export interface PnlBucket extends PnlStats {
 export interface DashboardOverview {
   mode: TradeMode;
   today: string;
-  liveSessionId: string | null;
+  paperSessionId: string | null;
   capital: number;
   availableBalance: number;
   todayPnl: number;
@@ -111,10 +109,28 @@ export interface DashboardPerformance {
   monthly: PnlBucket[];
 }
 
-export type LiveSessionStatus = 'STARTING' | 'RUNNING' | 'STOPPED' | 'COMPLETED' | 'ERROR';
+export type PaperInstrument = 'NIFTY' | 'BANKNIFTY';
 
-export interface LiveLaneTrade {
+/** What paper trading gives each strategy on one index. Fixed by the backend. */
+export interface PaperAllocation {
+  instrument: PaperInstrument;
+  capital: number;
+  maxLots: number;
+}
+
+/** A strategy and whether it is deployed to paper trading. */
+export interface StrategyDeployment {
+  strategy: StrategyDescriptor;
+  enabled: boolean;
+  updatedAt: string | null;
+}
+
+export type PaperSessionStatus = 'STARTING' | 'RUNNING' | 'STOPPED' | 'COMPLETED' | 'ERROR';
+
+export interface PaperOpenTrade {
   tradeKey: string;
+  instrumentKey: string;
+  tradingsymbol: string;
   side: 'BUY' | 'SELL';
   lots: number;
   lotSize: number;
@@ -123,58 +139,96 @@ export interface LiveLaneTrade {
   entryPrice: number;
   stopLoss: number | null;
   target: number | null;
-  entryOrderId: string;
 }
 
-export interface LiveLane {
+/** A contract the day's session streams: the ATM call or put of one index. */
+export interface PaperContract {
+  instrument: PaperInstrument;
   instrumentKey: string;
   tradingsymbol: string;
+  optionType: 'CE' | 'PE';
+  strike: number | null;
+  expiry: string | null;
   lotSize: number;
-  tickSize: number;
-  sessionDate: string | null;
-  barsSeen: number;
-  lastBarTime: number | null;
-  lastPrice: number | null;
-  openTrade: LiveLaneTrade | null;
-  tradeCount: number;
-  realisedPnl: number;
-  unrealisedPnl: number;
-  lastRejection: string | null;
   ticks: number;
   lastTickAt: number | null;
-  error: string | null;
-  warmupBars: number;
+  lastPrice: number | null;
 }
 
-export interface LiveActivity {
+/** One strategy's book on one index. */
+export interface PaperBook {
+  strategyId: string;
+  strategyName: string;
+  instrument: PaperInstrument;
+  capital: number;
+  maxLots: number;
+  availableBalance: number;
+  realisedPnl: number;
+  unrealisedPnl: number;
+  tradeCount: number;
+  openTrade: PaperOpenTrade | null;
+  lastRejection: string | null;
+  error: string | null;
+}
+
+export interface PaperActivity {
   at: number;
-  instrumentKey: string | null;
+  strategyId: string | null;
   tradingsymbol: string | null;
   kind: 'ENTRY' | 'EXIT' | 'REJECTED' | 'FEED_DOWN' | 'FEED_UP' | 'FEED_RESTART' | 'ERROR' | 'INFO';
   message: string;
 }
 
-export interface LiveSessionSnapshot {
+export interface PaperSession {
   sessionId: string;
-  status: LiveSessionStatus;
-  strategyId: string;
-  strategyName: string;
-  params: Record<string, number>;
+  status: PaperSessionStatus;
   tradeDate: string;
   startedAt: string;
   endedAt: string | null;
   error: string | null;
-  account: {
-    capital: number;
-    availableBalance: number;
-    lockedCapital: number;
-    realisedPnl: number;
-    unrealisedPnl: number;
-    maxCapitalPerTrade: number | null;
-  };
   feed: { healthy: boolean; disconnects: number; restarts: number };
-  instruments: LiveLane[];
-  activity: LiveActivity[];
+  contracts: PaperContract[];
+  books: PaperBook[];
+  activity: PaperActivity[];
+}
+
+export interface PaperTradingStatus {
+  state: 'STARTING' | 'RUNNING' | 'IDLE';
+  /** Why nothing is running; `null` while running. */
+  reason: string | null;
+  paused: boolean;
+  allocations: PaperAllocation[];
+  enabledStrategies: string[];
+  /** The running session, or today's latest. */
+  session: PaperSession | null;
+}
+
+/** One row of the paper-trading report (`paper_trades`). */
+export interface PaperTradeRecord {
+  id: number;
+  tradeId: string;
+  sessionId: string;
+  /** IST date of the entry. */
+  date: string;
+  /** IST time of the entry, `HH:mm:ss`. */
+  time: string;
+  lots: number;
+  instrument: PaperInstrument;
+  strategyId: string;
+  strategyName: string;
+  tradingsymbol: string;
+  side: 'BUY' | 'SELL';
+  quantity: number;
+  entryPrice: number;
+  exitPrice: number;
+  profitable: boolean;
+  stopLoss: number | null;
+  stopLossHit: boolean;
+  entryAt: number;
+  exitAt: number;
+  exitReason: string;
+  charges: number;
+  netPnl: number;
 }
 
 export interface BacktestRunSummary {
@@ -193,6 +247,14 @@ export interface BacktestRunSummary {
   recorded: number;
   stats: PnlStats;
   trades: DashboardTrade[];
+  /** Each instrument's traded bars: `[openTimeMs, open, high, low, close]`. */
+  charts: BacktestChart[];
+}
+
+export interface BacktestChart {
+  instrumentKey: string;
+  tradingsymbol: string;
+  bars: [number, number, number, number, number][];
 }
 
 export interface TradeHistoryQuery {

@@ -7,7 +7,7 @@ export interface OverlayItem {
   /** One line on what it draws. */
   hint: string;
   /** Class of the colour key, matching what is drawn on the chart. */
-  swatch: 'sr' | 'pdr' | 'rt' | 'lrj' | 'mte' | 'pat' | 'candles';
+  swatch: 'sr' | 'pdr' | 'rt' | 'lrj' | 'mte' | 'trd' | 'pat' | 'candles';
   /** Why it cannot be switched on yet, or `null` when it can. */
   blocked: () => string | null;
   on: () => boolean;
@@ -268,6 +268,9 @@ export function countLabel(n: number, one: string, many = `${one}s`): string | n
     }
     .swatch.mte {
       background: linear-gradient(to right, var(--up) 40%, #7fa6e6 40% 60%, var(--down) 60%);
+    }
+    .swatch.trd {
+      background: linear-gradient(to right, var(--up) 45%, #7fa6e6 45% 55%, var(--down) 55%);
     }
     .swatch.pdr {
       background: #c3d94e;

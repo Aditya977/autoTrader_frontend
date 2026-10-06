@@ -1,6 +1,6 @@
 import { Injectable, NgZone, inject } from '@angular/core';
 import { Observable } from 'rxjs';
-import { environment } from '../../environments/environment';
+import { wsUrl } from '../shared/ws-url';
 import type { ChartStreamEvent } from './chart-stream.models';
 
 @Injectable({ providedIn: 'root' })
@@ -38,8 +38,7 @@ export class ChartStreamSocketService {
       let attempt = 0;
       let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
-      const url =
-        `${environment.apiBase.replace(/^http/, 'ws')}` + `/streamer/stream/${sessionId}/ws`;
+      const url = wsUrl(`/streamer/stream/${sessionId}/ws`);
 
       const open = () => {
         socket = new WebSocket(url);
