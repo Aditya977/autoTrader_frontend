@@ -6,7 +6,23 @@
 # Public: no basic auth. The backend's API has no user accounts of its own —
 # it trusts whoever holds the server's Upstox session — so anyone who can
 # reach this host can use that session once someone has signed in.
+
+# DOMAIN is a host name or a bare IP, never a URL: an http:// prefix makes the
+# site plain HTTP, and the tls block below is then a config error.
+#
+# Browsers send no SNI to a bare IP, and Caddy, behind Docker's NAT, cannot
+# fall back to the address it was dialled on — so without a default it has no
+# certificate to offer and aborts the handshake (ERR_SSL_PROTOCOL_ERROR).
+# default_sni names one; Caddy only applies it to a site with a tls block.
+{
+	default_sni {$DOMAIN:localhost}
+}
+
 {$DOMAIN:localhost} {
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
 	encode gzip
 
 	@api path /streamer/* /strategy/*
