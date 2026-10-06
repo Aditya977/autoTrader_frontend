@@ -26,7 +26,6 @@ import { UpstoxAuthService } from '../auth/upstox-auth.service';
       <nav class="tabs" aria-label="Sections">
         <a routerLink="/chart" routerLinkActive="on">Charts</a>
         <a routerLink="/dashboard" routerLinkActive="on">Trading Dashboard</a>
-        <a routerLink="/day-shapes" routerLinkActive="on">Day shapes</a>
       </nav>
 
       <div class="slot"><ng-content /></div>
