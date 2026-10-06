@@ -3,15 +3,11 @@
 # DOMAIN: the public host name. With a real domain Caddy obtains and renews a
 # TLS certificate on its own (ports 80 and 443 must be reachable).
 #
-# The backend's API has no user accounts of its own — it trusts whoever holds
-# the server's Upstox session — so everything here sits behind basic auth.
-# BASIC_AUTH_HASH is a bcrypt hash: caddy hash-password --plaintext '<pw>'.
+# Public: no basic auth. The backend's API has no user accounts of its own —
+# it trusts whoever holds the server's Upstox session — so anyone who can
+# reach this host can use that session once someone has signed in.
 {$DOMAIN:localhost} {
 	encode gzip
-
-	basic_auth {
-		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
-	}
 
 	@api path /streamer/* /strategy/*
 	handle @api {
