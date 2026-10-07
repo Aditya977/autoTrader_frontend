@@ -5,7 +5,7 @@ import {
   toVolumeData,
 } from './candle-series-buffer';
 import { formatIstTime } from './chart-time';
-import type { ChartCandleEvent } from './chart-stream.models';
+import type { ChartCandleEvent, ChartFormingCandleEvent } from './chart-stream.models';
 
 const candle = (
   timestamp: number,
@@ -230,5 +230,50 @@ describe('VWAP carried through the buffer', () => {
     buffer.add(candle(OPEN_MS, 100, 0, { vwap: null }));
 
     expect(buffer.snapshot()[0].vwap).toBeNull();
+  });
+});
+
+describe('CandleSeriesBuffer forming bar', () => {
+  const forming = (timestamp: number, close: number): ChartFormingCandleEvent => ({
+    ...candle(timestamp, close),
+    type: 'CANDLE_FORMING',
+  });
+
+  it('draws the forming minute after the closed bars without counting it as closed', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.add(candle(OPEN_MS, 100));
+    buffer.setForming(forming(OPEN_MS + MINUTE, 101));
+    buffer.setForming(forming(OPEN_MS + MINUTE, 103));
+
+    expect(buffer.snapshot().map((bar) => bar.close)).toEqual([100, 103]);
+    expect(buffer.size).toBe(1);
+  });
+
+  it('is replaced by the closed bar for its minute, and never overwrites one', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.setForming(forming(OPEN_MS, 101));
+    buffer.add(candle(OPEN_MS, 102));
+    // A late frame for a minute that has already closed.
+    buffer.setForming(forming(OPEN_MS, 999));
+
+    expect(buffer.snapshot().map((bar) => bar.close)).toEqual([102]);
+  });
+
+  it('folds into the bucket it belongs to when resampled', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.add(candle(OPEN_MS, 100));
+    buffer.setForming(forming(OPEN_MS + MINUTE, 110));
+
+    const [bucket] = buffer.resampled(300);
+    expect(bucket.close).toBe(110);
+    expect(bucket.high).toBe(112);
+  });
+
+  it('is dropped by clear()', () => {
+    const buffer = new CandleSeriesBuffer();
+    buffer.setForming(forming(OPEN_MS, 101));
+    buffer.clear();
+
+    expect(buffer.snapshot()).toEqual([]);
   });
 });

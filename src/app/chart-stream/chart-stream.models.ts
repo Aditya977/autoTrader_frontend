@@ -367,6 +367,17 @@ export interface ChartCandleEvent {
 }
 
 /**
+ * LIVE only — the current minute's bar so far, sent every ~5 seconds.
+ *
+ * Provisional: the `CANDLE` with the same `timestamp` replaces it when the
+ * minute closes. Never part of the backlog, so a client that reconnects simply
+ * waits for the next one.
+ */
+export interface ChartFormingCandleEvent extends Omit<ChartCandleEvent, 'type'> {
+  type: 'CANDLE_FORMING';
+}
+
+/**
  * A complete replacement set of levels — never a delta.
  *
  * Draw exactly these and forget what was drawn before: a level that stopped
@@ -403,6 +414,7 @@ export interface ChartErrorEvent {
 
 export type ChartStreamEvent =
   | ChartCandleEvent
+  | ChartFormingCandleEvent
   | ChartLevelsEvent
   | ChartSessionStatusEvent
   | ChartLifecycleEvent

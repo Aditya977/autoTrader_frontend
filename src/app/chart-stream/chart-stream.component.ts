@@ -1912,6 +1912,12 @@ export class ChartStreamComponent {
             // visible result.
             this.scheduleRedraw();
             break;
+          case 'CANDLE_FORMING':
+            this.buffer.setForming(event);
+            // No refit: this lands every few seconds, and refitting on each
+            // would yank the view back from wherever the user has scrolled.
+            this.scheduleRedraw({ refit: false });
+            break;
           case 'LEVELS':
             // Only a set found on the interval this chart is drawing. One
             // computed on another describes turns that are not on screen, and
@@ -2477,14 +2483,23 @@ export class ChartStreamComponent {
   }
 
   private redrawQueued = false;
+  private redrawRefit = false;
 
-  /** Coalesces a burst of CANDLE frames into a single redraw per microtask. */
-  private scheduleRedraw(): void {
+  /**
+   * Coalesces a burst of CANDLE frames into a single redraw per microtask.
+   *
+   * Refits if any frame in the burst asked to, so a closed bar arriving
+   * alongside a forming one still keeps a growing replay on screen.
+   */
+  private scheduleRedraw(options: { refit?: boolean } = {}): void {
+    this.redrawRefit ||= options.refit ?? true;
     if (this.redrawQueued) return;
     this.redrawQueued = true;
     void Promise.resolve().then(() => {
+      const refit = this.redrawRefit;
       this.redrawQueued = false;
-      this.redraw({ refit: true });
+      this.redrawRefit = false;
+      this.redraw({ refit });
     });
   }
 

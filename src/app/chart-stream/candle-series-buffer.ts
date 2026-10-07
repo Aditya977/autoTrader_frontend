@@ -1,6 +1,6 @@
 import type { CandlestickData, HistogramData, UTCTimestamp } from 'lightweight-charts';
 import { bucketStartMs, toChartTime } from './chart-time';
-import type { ChartCandleEvent } from './chart-stream.models';
+import type { ChartCandleEvent, ChartFormingCandleEvent } from './chart-stream.models';
 
 export { toChartTime } from './chart-time';
 
@@ -38,26 +38,35 @@ export interface Bar {
  */
 export class CandleSeriesBuffer {
   private readonly bars = new Map<number, Bar>();
+  /**
+   * The LIVE minute still in progress, kept apart from the closed bars.
+   *
+   * Apart so that `size` counts closed bars only — consumers key "a bar has
+   * closed" off it — and so a forming bar can never overwrite a closed one: a
+   * frame that arrives after its minute's `CANDLE` is simply ignored.
+   */
+  private forming: Bar | null = null;
 
   /** Idempotent: the same bar arriving twice replaces, never duplicates. */
   add(event: ChartCandleEvent): void {
-    const time = toChartTime(event.timestamp);
-    this.bars.set(time, {
-      time,
-      open: event.open,
-      high: event.high,
-      low: event.low,
-      close: event.close,
-      // A bar with no volume on the wire (an index carries none) is 0 here,
-      // which the histogram simply draws as nothing.
-      volume: event.volume ?? 0,
-      vwap: event.vwap ?? null,
-    });
+    const bar = toBar(event);
+    this.bars.set(bar.time, bar);
+    if (this.forming && this.forming.time <= bar.time) this.forming = null;
   }
 
-  /** Ascending by time — what `setData` requires. */
+  /** The newest LIVE minute so far; replaced by the next one or by its close. */
+  setForming(event: ChartFormingCandleEvent): void {
+    const bar = toBar(event);
+    if (this.bars.has(bar.time)) return;
+    this.forming = bar;
+  }
+
+  /** Ascending by time — what `setData` requires. Includes the forming bar. */
   snapshot(): Bar[] {
-    return [...this.bars.values()].sort((a, b) => a.time - b.time);
+    const closed = [...this.bars.values()].sort((a, b) => a.time - b.time);
+    const last = closed[closed.length - 1];
+    if (this.forming && (!last || this.forming.time > last.time)) closed.push(this.forming);
+    return closed;
   }
 
   /**
@@ -103,7 +112,22 @@ export class CandleSeriesBuffer {
 
   clear(): void {
     this.bars.clear();
+    this.forming = null;
   }
+}
+
+function toBar(event: ChartCandleEvent | ChartFormingCandleEvent): Bar {
+  return {
+    time: toChartTime(event.timestamp),
+    open: event.open,
+    high: event.high,
+    low: event.low,
+    close: event.close,
+    // A bar with no volume on the wire (an index carries none) is 0 here,
+    // which the histogram simply draws as nothing.
+    volume: event.volume ?? 0,
+    vwap: event.vwap ?? null,
+  };
 }
 
 /** `Bar[]` → what the candlestick series takes. */
