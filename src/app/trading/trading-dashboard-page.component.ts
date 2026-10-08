@@ -122,6 +122,7 @@ const IDLE_REFRESH_MS = 30_000;
             <app-strategy-deployments
               [deployments]="deployments()"
               [allocations]="paperStatus()?.allocations ?? []"
+              [strategyAllocations]="paperStatus()?.strategyAllocations ?? {}"
               [running]="paperStatus()?.state === 'RUNNING'"
               [busy]="busy()"
               (toggle)="setEnabled($event)"

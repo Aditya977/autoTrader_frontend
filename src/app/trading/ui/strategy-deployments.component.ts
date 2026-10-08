@@ -3,7 +3,9 @@ import type { PaperAllocation, StrategyDeployment } from '../trading.models';
 
 /**
  * Which strategies paper trading runs. Only the enabled ones are deployed;
- * the capital and the one-lot size are the backend's, shown here, not set.
+ * the capital and the lot size are the backend's, shown here, not set. A
+ * strategy the backend trades at a different size (Key Zones v2: 3 lots, so
+ * its 1/3 booking is a whole lot) shows its own size.
  */
 @Component({
   selector: 'app-strategy-deployments',
@@ -14,7 +16,9 @@ import type { PaperAllocation, StrategyDeployment } from '../trading.models';
       @for (a of allocations(); track a.instrument; let last = $last) {
         <b>{{ rupees(a.capital) }}</b> on {{ a.instrument }}{{ last ? '' : ' and ' }}
       }
-      — {{ lotsLabel() }} per trade, set by the backend.
+      — {{ lotsLabel() }} per trade, set by the backend{{
+        hasOverrides() ? ', unless shown on the strategy' : ''
+      }}.
     </p>
     @if (deployments().length === 0) {
       <p class="muted">No strategies in the catalogue.</p>
@@ -36,6 +40,9 @@ import type { PaperAllocation, StrategyDeployment } from '../trading.models';
           <div class="text">
             <span class="name">{{ d.strategy.name }}</span>
             <span class="state">{{ d.enabled ? 'Enabled' : 'Disabled' }}</span>
+            @if (sizeOf(d.strategy.id); as size) {
+              <span class="size">{{ size }}</span>
+            }
             <p class="desc">{{ d.strategy.description }}</p>
           </div>
         </li>
@@ -90,6 +97,12 @@ import type { PaperAllocation, StrategyDeployment } from '../trading.models';
     }
     li.on .state {
       color: var(--up);
+    }
+    .size {
+      margin-left: 0.5rem;
+      font-size: 0.7rem;
+      font-family: var(--font-mono);
+      color: var(--text);
     }
     .desc {
       margin: 0.2rem 0 0;
@@ -151,6 +164,8 @@ import type { PaperAllocation, StrategyDeployment } from '../trading.models';
 export class StrategyDeploymentsComponent {
   readonly deployments = input<readonly StrategyDeployment[]>([]);
   readonly allocations = input<readonly PaperAllocation[]>([]);
+  /** Strategies the backend trades at their own size, by id. */
+  readonly strategyAllocations = input<Readonly<Record<string, readonly PaperAllocation[]>>>({});
   /** A session is trading now — disabling squares that strategy's positions off. */
   readonly running = input(false);
   readonly busy = input(false);
@@ -165,6 +180,19 @@ export class StrategyDeploymentsComponent {
   lotsLabel(): string {
     const lots = [...new Set(this.allocations().map((a) => a.maxLots))];
     return lots.length === 1 ? `${lots[0]} lot${lots[0] === 1 ? '' : 's'}` : 'a fixed size';
+  }
+
+  hasOverrides(): boolean {
+    return Object.keys(this.strategyAllocations()).length > 0;
+  }
+
+  /** "3 lots · ₹60,000 NIFTY · ₹1,20,000 BANKNIFTY" for a strategy with its own size, else null. */
+  sizeOf(strategyId: string): string | null {
+    const own = this.strategyAllocations()[strategyId];
+    if (!own?.length) return null;
+    const lots = [...new Set(own.map((a) => a.maxLots))];
+    const size = lots.length === 1 ? `${lots[0]} lot${lots[0] === 1 ? '' : 's'}` : 'own size';
+    return [size, ...own.map((a) => `${this.rupees(a.capital)} ${a.instrument}`)].join(' · ');
   }
 
   flip(d: StrategyDeployment, event: Event): void {

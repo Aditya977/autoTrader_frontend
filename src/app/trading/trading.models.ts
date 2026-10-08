@@ -198,6 +198,8 @@ export interface PaperTradingStatus {
   reason: string | null;
   paused: boolean;
   allocations: PaperAllocation[];
+  /** Strategies traded at a different size than `allocations` (more lots, capital scaled), by id. */
+  strategyAllocations?: Record<string, PaperAllocation[]>;
   enabledStrategies: string[];
   /** The running session, or today's latest. */
   session: PaperSession | null;
