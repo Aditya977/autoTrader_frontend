@@ -188,8 +188,41 @@ export interface PaperSession {
   error: string | null;
   feed: { healthy: boolean; disconnects: number; restarts: number };
   contracts: PaperContract[];
+  /** The NIFTY 50 stocks on the socket; absent on an older backend, `null` when not streamed. */
+  stocks?: { streaming: number; ticks: number } | null;
   books: PaperBook[];
   activity: PaperActivity[];
+}
+
+/** One NIFTY 50 stock's live price (`GET /strategy/paper/stocks`). */
+export interface StockQuote {
+  symbol: string;
+  sector: string;
+  instrumentKey: string;
+  /** `null` until the stock's first tick. */
+  lastPrice: number | null;
+  prevClose: number | null;
+  /** `lastPrice − prevClose`. */
+  change: number | null;
+  /** Percent, two places. */
+  changePct: number | null;
+  /** Exchange time of the last tick, epoch ms. */
+  lastTickAt: number | null;
+  /** Ticks received this session. */
+  ticks: number;
+}
+
+/** Whether the NIFTY 50 stocks are streaming on the paper-trading socket, and their prices. */
+export interface PaperStocksView {
+  /** The backend's `STREAM_NIFTY50` flag. */
+  enabled: boolean;
+  /** On the live socket right now. */
+  streaming: boolean;
+  /** Why not; `null` while streaming. */
+  reason: string | null;
+  tradeDate: string | null;
+  /** All constituents, by symbol; prices `null` when no session streamed them today. */
+  stocks: StockQuote[];
 }
 
 export interface PaperTradingStatus {
