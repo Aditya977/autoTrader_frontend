@@ -11,6 +11,7 @@ import type {
   DashboardOverview,
   DashboardPerformance,
   DashboardTrade,
+  PaperStocksView,
   PaperTradeRecord,
   PaperTradingStatus,
   RunBacktestRequest,
@@ -18,6 +19,7 @@ import type {
   TradeMode,
 } from './trading.models';
 import { BacktestPanelComponent } from './ui/backtest-panel.component';
+import { Nifty50StocksPanelComponent } from './ui/nifty50-stocks-panel.component';
 import { OverviewCardsComponent } from './ui/overview-cards.component';
 import { PaperReportTableComponent } from './ui/paper-report-table.component';
 import { PaperStatusPanelComponent } from './ui/paper-status-panel.component';
@@ -45,6 +47,7 @@ const IDLE_REFRESH_MS = 30_000;
     AppHeaderComponent,
     OverviewCardsComponent,
     PaperStatusPanelComponent,
+    Nifty50StocksPanelComponent,
     StrategyDeploymentsComponent,
     PaperReportTableComponent,
     BacktestPanelComponent,
@@ -129,6 +132,21 @@ const IDLE_REFRESH_MS = 30_000;
             />
           </section>
         </div>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>NIFTY 50 stocks</h2>
+            @if (paperStocks(); as ps) {
+              <span class="meta">
+                {{ stocksTicking() }} / {{ ps.stocks.length }} ticking
+                @if (ps.tradeDate) {
+                  · {{ ps.tradeDate }}
+                }
+              </span>
+            }
+          </div>
+          <app-nifty50-stocks-panel [view]="paperStocks()" [error]="stocksError()" />
+        </section>
       } @else {
         <section class="card">
           <div class="card-head"><h2>Run a backtest</h2></div>
@@ -265,6 +283,8 @@ export class TradingDashboardPageComponent implements OnInit {
   );
   readonly strategies = signal<StrategyDescriptor[]>([]);
   readonly paperStatus = signal<PaperTradingStatus | null>(null);
+  readonly paperStocks = signal<PaperStocksView | null>(null);
+  readonly stocksError = signal<string | null>(null);
   readonly deployments = signal<StrategyDeployment[]>([]);
   readonly overview = signal<DashboardOverview | null>(null);
   readonly performance = signal<DashboardPerformance | null>(null);
@@ -282,6 +302,9 @@ export class TradingDashboardPageComponent implements OnInit {
     return state === 'RUNNING' || state === 'STARTING';
   });
   readonly enabledCount = computed(() => this.deployments().filter((d) => d.enabled).length);
+  readonly stocksTicking = computed(
+    () => (this.paperStocks()?.stocks ?? []).filter((q) => q.ticks > 0).length,
+  );
 
   readonly rangeLabel = computed(() => {
     const from = this.from();
@@ -390,6 +413,31 @@ export class TradingDashboardPageComponent implements OnInit {
     });
   }
 
+  /**
+   * The NIFTY 50 stocks, on the same timer as the rest of the paper figures
+   * but outside their `forkJoin`: a backend without the endpoint (or a failed
+   * call) shows a note in the stocks card instead of failing the whole page.
+   */
+  private refreshStocks(): void {
+    this.api
+      .paperStocks()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (view) => {
+          this.paperStocks.set(view);
+          this.stocksError.set(null);
+        },
+        error: (e: { status?: number; message: string }) => {
+          this.paperStocks.set(null);
+          this.stocksError.set(
+            e.status === 404
+              ? 'The backend does not serve NIFTY 50 stocks yet — redeploy it.'
+              : `Could not load the NIFTY 50 stocks: ${e.message}`,
+          );
+        },
+      });
+  }
+
   /** Everything the page shows, for the current mode and range, in one round. */
   private refresh(): void {
     this.sinceRefreshMs = 0;
@@ -416,6 +464,7 @@ export class TradingDashboardPageComponent implements OnInit {
           },
           error: (e: Error) => this.error.set(`Could not load the dashboard: ${e.message}`),
         });
+      this.refreshStocks();
       return;
     }
 

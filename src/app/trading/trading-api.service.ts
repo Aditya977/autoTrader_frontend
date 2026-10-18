@@ -11,6 +11,7 @@ import type {
   DashboardPerformance,
   DashboardTrade,
   PaperInstrument,
+  PaperStocksView,
   PaperTradeRecord,
   PaperTradingStatus,
   RunBacktestRequest,
@@ -36,6 +37,13 @@ export class TradingApiService {
   paperStatus(): Observable<PaperTradingStatus> {
     return this.http
       .get<PaperTradingStatus>(`${this.base}/strategy/paper/status`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /** The NIFTY 50 stocks on the paper-trading socket and their live prices. */
+  paperStocks(): Observable<PaperStocksView> {
+    return this.http
+      .get<PaperStocksView>(`${this.base}/strategy/paper/stocks`)
       .pipe(catchError(this.unwrap));
   }
 

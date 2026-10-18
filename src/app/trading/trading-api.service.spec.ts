@@ -46,6 +46,15 @@ describe('TradingApiService', () => {
     req.flush({});
   });
 
+  it('asks for the NIFTY 50 stocks and their prices', () => {
+    let enabled: boolean | undefined;
+    api.paperStocks().subscribe((v) => (enabled = v.enabled));
+    const req = http.expectOne(`${base}/strategy/paper/stocks`);
+    expect(req.request.method).toBe('GET');
+    req.flush({ enabled: true, streaming: false, reason: 'idle', tradeDate: null, stocks: [] });
+    expect(enabled).toBeTrue();
+  });
+
   it('unwraps the backend error envelope', () => {
     let caught: unknown;
     api.setStrategyEnabled('nope', true).subscribe({ error: (e: unknown) => (caught = e) });
