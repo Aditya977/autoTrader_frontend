@@ -10,10 +10,13 @@ import type {
   DashboardOverview,
   DashboardPerformance,
   DashboardTrade,
+  ExportManifest,
   PaperInstrument,
   PaperStocksView,
   PaperTradeRecord,
   PaperTradingStatus,
+  PremarketBiasView,
+  PremarketHistory,
   RunBacktestRequest,
   StrategyDeployment,
   TradeHistoryQuery,
@@ -21,8 +24,9 @@ import type {
 } from './trading.models';
 
 /**
- * Paper trading, backtests and the dashboard figures — the backend's
- * `/strategy/paper`, `/strategy/backtest` and `/strategy/dashboard` routes.
+ * Paper trading, backtests, the dashboard figures, the pre-market bias and the
+ * stored-data manifest — the backend's `/strategy/paper`, `/strategy/backtest`,
+ * `/strategy/dashboard`, `/strategy/premarket` and `/strategy/export` routes.
  *
  * Errors are unwrapped into {@link ChartStreamError}, like the rest of the
  * app's API clients, because they arrive in the same envelope.
@@ -148,6 +152,31 @@ export class TradingApiService {
     if (query.limit) params = params.set('limit', String(query.limit));
     return this.http
       .get<{ trades: DashboardTrade[] }>(`${this.base}/strategy/dashboard/trades`, { params })
+      .pipe(catchError(this.unwrap));
+  }
+
+  // --- pre-market bias and stored data -------------------------------------
+
+  /** The newest day's pre-market bias; a 404 means none has been published. */
+  premarketLatest(): Observable<PremarketBiasView> {
+    return this.http
+      .get<PremarketBiasView>(`${this.base}/strategy/premarket/latest`)
+      .pipe(catchError(this.unwrap));
+  }
+
+  /** Recent days, newest first, with how each call turned out. */
+  premarketHistory(limit = 30): Observable<PremarketHistory> {
+    return this.http
+      .get<PremarketHistory>(`${this.base}/strategy/premarket/history`, {
+        params: new HttpParams().set('limit', String(limit)),
+      })
+      .pipe(catchError(this.unwrap));
+  }
+
+  /** What the backend has stored: trade counts and every bar series' span. */
+  exportManifest(): Observable<ExportManifest> {
+    return this.http
+      .get<ExportManifest>(`${this.base}/strategy/export/manifest`)
       .pipe(catchError(this.unwrap));
   }
 

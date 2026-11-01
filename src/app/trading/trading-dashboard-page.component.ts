@@ -11,9 +11,12 @@ import type {
   DashboardOverview,
   DashboardPerformance,
   DashboardTrade,
+  ExportManifest,
   PaperStocksView,
   PaperTradeRecord,
   PaperTradingStatus,
+  PremarketBiasView,
+  PremarketHistory,
   RunBacktestRequest,
   StrategyDeployment,
   TradeMode,
@@ -24,6 +27,8 @@ import { OverviewCardsComponent } from './ui/overview-cards.component';
 import { PaperReportTableComponent } from './ui/paper-report-table.component';
 import { PaperStatusPanelComponent } from './ui/paper-status-panel.component';
 import { PerformancePanelComponent } from './ui/performance-panel.component';
+import { PremarketBiasPanelComponent } from './ui/premarket-bias-panel.component';
+import { StoredDataPanelComponent } from './ui/stored-data-panel.component';
 import { StrategyDeploymentsComponent } from './ui/strategy-deployments.component';
 import { TradeHistoryTableComponent } from './ui/trade-history-table.component';
 
@@ -31,6 +36,8 @@ import { TradeHistoryTableComponent } from './ui/trade-history-table.component';
 const RUNNING_REFRESH_MS = 5_000;
 /** How often it checks whether the backend has started (or ended) a session. */
 const IDLE_REFRESH_MS = 30_000;
+/** The stored-data manifest changes once a day; no need to count bars every tick. */
+const MANIFEST_REFRESH_MS = 10 * 60_000;
 
 /**
  * Trading Dashboard — paper trading and backtests, never mixed.
@@ -53,6 +60,8 @@ const IDLE_REFRESH_MS = 30_000;
     BacktestPanelComponent,
     PerformancePanelComponent,
     TradeHistoryTableComponent,
+    PremarketBiasPanelComponent,
+    StoredDataPanelComponent,
   ],
   template: `
     <app-header>
@@ -101,6 +110,18 @@ const IDLE_REFRESH_MS = 30_000;
       <app-overview-cards [overview]="overview()" />
 
       @if (mode() === 'PAPER') {
+        <section class="card">
+          <div class="card-head">
+            <h2>Pre-market bias</h2>
+            <span class="meta">NIFTY · NSE pre-open</span>
+          </div>
+          <app-premarket-bias-panel
+            [bias]="premarket()"
+            [history]="premarketHistory()"
+            [error]="premarketError()"
+          />
+        </section>
+
         <div class="split">
           <section class="card">
             <div class="card-head">
@@ -146,6 +167,16 @@ const IDLE_REFRESH_MS = 30_000;
             }
           </div>
           <app-nifty50-stocks-panel [view]="paperStocks()" [error]="stocksError()" />
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Stored data</h2>
+            @if (manifest(); as m) {
+              <span class="meta">as of {{ m.generatedAt.slice(0, 10) }}</span>
+            }
+          </div>
+          <app-stored-data-panel [manifest]="manifest()" [error]="manifestError()" />
         </section>
       } @else {
         <section class="card">
@@ -285,6 +316,11 @@ export class TradingDashboardPageComponent implements OnInit {
   readonly paperStatus = signal<PaperTradingStatus | null>(null);
   readonly paperStocks = signal<PaperStocksView | null>(null);
   readonly stocksError = signal<string | null>(null);
+  readonly premarket = signal<PremarketBiasView | null>(null);
+  readonly premarketHistory = signal<PremarketHistory | null>(null);
+  readonly premarketError = signal<string | null>(null);
+  readonly manifest = signal<ExportManifest | null>(null);
+  readonly manifestError = signal<string | null>(null);
   readonly deployments = signal<StrategyDeployment[]>([]);
   readonly overview = signal<DashboardOverview | null>(null);
   readonly performance = signal<DashboardPerformance | null>(null);
@@ -314,6 +350,8 @@ export class TradingDashboardPageComponent implements OnInit {
   });
 
   private sinceRefreshMs = 0;
+  /** When the manifest was last asked for (epoch ms); 0 for never. */
+  private manifestAt = 0;
 
   ngOnInit(): void {
     this.strategyApi
@@ -438,6 +476,67 @@ export class TradingDashboardPageComponent implements OnInit {
       });
   }
 
+  /**
+   * The pre-market bias, outside the paper `forkJoin` like the stocks: it
+   * comes from a separate scraper, and a day it has not published (a 404) is
+   * a note in its card, not a broken page.
+   */
+  private refreshPremarket(): void {
+    this.api
+      .premarketLatest()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (bias) => {
+          this.premarket.set(bias);
+          this.premarketError.set(null);
+        },
+        error: (e: { status?: number; message: string }) => {
+          this.premarket.set(null);
+          this.premarketError.set(
+            e.status === 404
+              ? e.message.includes('no pre-market bias')
+                ? 'No pre-market bias published yet — the scraper pushes it each morning.'
+                : 'The backend does not serve the pre-market bias yet — redeploy it.'
+              : `Could not load the pre-market bias: ${e.message}`,
+          );
+        },
+      });
+    this.api
+      .premarketHistory(30)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (history) => this.premarketHistory.set(history),
+        error: () => this.premarketHistory.set(null),
+      });
+  }
+
+  /**
+   * What the backend has stored. Counted over every stored bar, so it is
+   * asked for at most every {@link MANIFEST_REFRESH_MS}, not on every tick.
+   */
+  private refreshManifest(): void {
+    const now = Date.now();
+    if (now - this.manifestAt < MANIFEST_REFRESH_MS) return;
+    this.manifestAt = now;
+    this.api
+      .exportManifest()
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (manifest) => {
+          this.manifest.set(manifest);
+          this.manifestError.set(null);
+        },
+        error: (e: { status?: number; message: string }) => {
+          this.manifestAt = 0;
+          this.manifestError.set(
+            e.status === 404
+              ? 'The backend does not serve the stored-data manifest yet — redeploy it.'
+              : `Could not load the stored data: ${e.message}`,
+          );
+        },
+      });
+  }
+
   /** Everything the page shows, for the current mode and range, in one round. */
   private refresh(): void {
     this.sinceRefreshMs = 0;
@@ -465,6 +564,8 @@ export class TradingDashboardPageComponent implements OnInit {
           error: (e: Error) => this.error.set(`Could not load the dashboard: ${e.message}`),
         });
       this.refreshStocks();
+      this.refreshPremarket();
+      this.refreshManifest();
       return;
     }
 
