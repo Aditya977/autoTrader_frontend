@@ -299,3 +299,116 @@ export interface TradeHistoryQuery {
   runId?: string;
   limit?: number;
 }
+
+// --- pre-market bias (`/strategy/premarket`) --------------------------------
+
+/** `flat` as a prediction means neutral/mixed: no call was made. */
+export type PremarketDirection = 'up' | 'down' | 'flat';
+
+export interface PremarketTargetCheck {
+  /** The move, in %; `null` until the outcome is known. */
+  movePct: number | null;
+  actual: PremarketDirection | null;
+  /** `null` when no call was made or the outcome is not in yet. */
+  correct: boolean | null;
+}
+
+export interface PremarketEvaluation {
+  predicted: PremarketDirection | null;
+  openGap: PremarketTargetCheck;
+  open30m: PremarketTargetCheck;
+  openToClose: PremarketTargetCheck;
+}
+
+export interface PremarketBiasSummary {
+  date: string;
+  analysisTime: string;
+  /** `FINALIZED`, `READY_PROVISIONAL`, `NO_DATA`, … */
+  runStatus: string;
+  isFinal: boolean;
+  /** −100..+100; `null` when the run produced no bias. */
+  score: number | null;
+  label: string | null;
+  strong: boolean;
+  headline: string | null;
+  confidence: { label: string | null; score: number | null };
+  indexGapPct: number | null;
+  breadthSignal: number | null;
+  advancers: number | null;
+  decliners: number | null;
+  outcome: Record<string, unknown> | null;
+  evaluation: PremarketEvaluation;
+  updatedAt: number;
+}
+
+/** The pieces of the scraper's full analysis the dashboard reads. */
+export interface PremarketStockMove {
+  symbol: string;
+  gap_pct: number | null;
+}
+
+export interface PremarketBiasView extends PremarketBiasSummary {
+  analysis: {
+    breadth?: {
+      top_positive?: PremarketStockMove[];
+      top_negative?: PremarketStockMove[];
+      coverage_pct?: number | null;
+    } | null;
+    explanations?: {
+      opening_indication?: { label: string; text: string };
+      index_summary?: string;
+      stocks_summary?: string;
+      conclusion?: string;
+      cautions?: string[];
+    } | null;
+    [key: string]: unknown;
+  };
+}
+
+export interface PremarketScoreLine {
+  checked: number;
+  correct: number;
+}
+
+export interface PremarketScorecard {
+  days: number;
+  calls: number;
+  openGap: PremarketScoreLine;
+  open30m: PremarketScoreLine;
+  openToClose: PremarketScoreLine;
+}
+
+export interface PremarketHistory {
+  days: PremarketBiasSummary[];
+  scorecard: PremarketScorecard;
+}
+
+// --- stored data on the backend (`/strategy/export/manifest`) ---------------
+
+export interface StoredSeries {
+  instrumentKey: string;
+  tradingsymbol: string;
+  /** `UNDERLYING`, `CE` or `PE`. */
+  role: string;
+  underlying: string;
+  strike: number | null;
+  expiry: string | null;
+  bars: number;
+  firstDate: string;
+  lastDate: string;
+}
+
+export interface ExportManifest {
+  generatedAt: string;
+  paperTrades: { count: number; firstDate: string | null; lastDate: string | null };
+  tradedContracts: number;
+  datasets: {
+    id: number;
+    label: string;
+    status: string;
+    interval: string;
+    fromDate: string;
+    toDate: string;
+    series: StoredSeries[];
+  }[];
+}
